@@ -1,67 +1,49 @@
-""" Tests for the ConfigUpdater class. """
+"""End-to-end update of a real WordPress wp-config.php sample."""
 
-import os
 import shutil
-import unittest
+from pathlib import Path
 
-from logging import basicConfig
+import pytest
 
-from wpconfigr import WpConfigFile
+from l3io.wp.config import WpConfigFile
 
-basicConfig(level='DEBUG')
-
-
-class FileTestCase(unittest.TestCase):
-    """ Tests for the ConfigUpdater class. """
-
-    @classmethod
-    def setUpClass(cls):
-        cls.this_dir = os.path.dirname(os.path.realpath(__file__))
-        cls.original_file = os.path.join(
-            cls.this_dir, 'wp-config-sample.original.php')
-
-    def test_read(self):
-        """ Asserts that a value can be read from a file. """
-
-        config = WpConfigFile(filename=self.original_file)
-        self.assertEqual(config.get('DB_PASSWORD'), 'password_here')
-
-    def test_write(self):
-        """ Asserts that the file is updated as-expected. """
-
-        actual_file = os.path.join(self.this_dir,
-                                   'wp-config-sample.actual.php')
-
-        expected_file = os.path.join(self.this_dir,
-                                     'wp-config-sample.expected.php')
-
-        if os.path.exists(actual_file):
-            os.unlink(actual_file)
-
-        shutil.copy(self.original_file, actual_file)
-
-        config = WpConfigFile(filename=actual_file)
-
-        config.set('DB_NAME', 'updated-db-name')
-        config.set('DB_USER', 'updated-db-user')
-        config.set('DB_COLLATE', 'updated-db-collate')
-        config.set('AUTH_KEY', 'updated-auth-key')
-        config.set('WP_DEBUG', True)
-        config.set('WP_NEW_STRING', 'bar')
-        config.set('WP_NEW_TRUE', True)
-        config.set('WP_NEW_FALSE', False)
-
-        with open(actual_file, 'r') as stream:
-            actual = stream.readlines()
-
-        os.unlink(actual_file)
-
-        with open(expected_file, 'r') as stream:
-            expected = stream.readlines()
-
-        self.maxDiff = None  # pylint: disable=invalid-name
-        self.assertEqual(actual, expected)
+FIXTURES = Path(__file__).resolve().parent
+ORIGINAL = FIXTURES / "wp-config-sample.original.php"
+EXPECTED = FIXTURES / "wp-config-sample.expected.php"
 
 
-if __name__ == '__main__':
-    unittest.main()
+@pytest.fixture
+def sample(tmp_path):
+    """
+    A copy in tmp_path rather than beside the fixtures.
+
+    The previous version wrote `wp-config-sample.actual.php` into the tests
+    directory and unlinked it at the end, so a mid-test failure stranded an
+    untracked file in the working tree.
+    """
+    target = tmp_path / "wp-config.php"
+    shutil.copy(ORIGINAL, target)
+    return target
+
+
+def test_read(sample):
+    assert WpConfigFile(sample).get("DB_PASSWORD") == "password_here"
+
+
+def test_write(sample):
+    config = WpConfigFile(sample)
+    config.set("DB_NAME", "updated-db-name")
+    config.set("DB_USER", "updated-db-user")
+    config.set("DB_COLLATE", "updated-db-collate")
+    config.set("AUTH_KEY", "updated-auth-key")
+    config.set("WP_DEBUG", True)
+    config.set("WP_NEW_STRING", "bar")
+    config.set("WP_NEW_TRUE", True)
+    config.set("WP_NEW_FALSE", False)
+
+    assert sample.read_text().splitlines() == EXPECTED.read_text().splitlines()
+
+
+def test_the_sample_carries_a_table_prefix(sample):
+    """WordPress ships `$table_prefix` as a variable, not a define()."""
+    assert WpConfigFile(sample).get_variable("table_prefix") == "wp_"

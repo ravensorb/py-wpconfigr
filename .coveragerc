@@ -1,5 +1,0 @@
-[run]
-include =
-    wpconfigr/**
-omit =
-    **/test_*.py

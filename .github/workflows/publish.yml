@@ -1,0 +1,237 @@
+# l3io-wp-config publish.
+#
+# DELIBERATELY A SEPARATE FILE FROM ci.yml, AND act MUST NEVER RUN IT.
+# act has no OIDC and ignores `job.permissions` entirely, so an `if:` guard
+# would not protect this — act would run the publish job and fail confusingly.
+# File separation is the only reliable boundary. The repo .actrc points act at
+# ci.yml; keep it that way.
+#
+# Release ORDER across the three packages is manual: l3io-wp-config, then
+# l3io-wp-database, then l3io-wp-backup. This package is FIRST — nothing else
+# can publish until it resolves from the index.
+#
+# Version must be >= 1.5.0. PyPI burns filenames permanently, so the fork's 1.4
+# can never be re-uploaded.
+
+name: Publish
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Where to publish
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+
+permissions: {}
+
+jobs:
+  version-gate:
+    # The handoff requires version >= 1.5.0: PyPI burns filenames permanently, so
+    # the fork's 1.4 can never be re-uploaded. That was prose in AGENTS.md; here
+    # it is a gate.
+    #
+    # Runs for BOTH triggers. A workflow_dispatch has no tag, so the tag steps are
+    # skipped and only the floor is enforced; a tag push additionally has to agree
+    # with pyproject.toml, which catches publishing a version nobody tagged.
+    name: validate version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+
+      - name: Tag info
+        id: tag-info
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: LiquidLogicLabs/git-action-tag-info@v2
+        with:
+          tag-name: ${{ github.ref_name }}
+
+      - name: Parse version tag
+        id: semver
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: LiquidLogicLabs/git-action-tag-validate-version@v2
+        with:
+          tag: ${{ steps.tag-info.outputs.name }}
+          version-type: regex
+          version-regex: '^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$'
+
+      - name: version is at or above the 1.5.0 floor, and agrees with any tag
+        env:
+          TAG_VERSION: ${{ steps.semver.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, sys, tomllib
+
+          declared = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+          parts = tuple(int(n) for n in declared.split(".")[:2])
+          if parts < (1, 5):
+              sys.exit(f"version {declared} is below the 1.5.0 floor; PyPI burned 1.4 permanently")
+
+          tag = (os.environ.get("TAG_VERSION") or "").lstrip("v")
+          if tag and tag != declared:
+              sys.exit(f"tag {tag} does not match pyproject version {declared}")
+
+          print(f"version {declared} accepted" + (f" (tag {tag})" if tag else " (no tag)"))
+          PY
+
+  build:
+    name: build distributions
+    runs-on: ubuntu-latest
+    needs: [version-gate]
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.6"
+      - name: build
+        # --no-sources so a release cannot silently depend on a local path source
+        run: uv build --no-sources
+      - name: check metadata renders on PyPI
+        run: uvx twine check --strict dist/*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  smoke:
+    # The release gate, run before anything is published: the built artifact
+    # must install and import in a clean environment on every supported
+    # interpreter. A failure here stops the release rather than the user.
+    name: clean install · py${{ matrix.python }}
+    runs-on: ubuntu-latest
+    needs: [build]
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: dist, path: dist }
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.6"
+          python-version: ${{ matrix.python }}
+      - run: |
+          set -euo pipefail
+          uv run --isolated --no-project --python "${{ matrix.python }}" \
+                 --with "$(ls dist/*.whl)" \
+                 python -c "from l3io.wp import config; print('import ok', sorted(config.__all__))"
+
+  namespace:
+    # AD-27 — the l3io.wp namespace is PEP 420 native. A distribution shipping an
+    # __init__.py at l3io/ or l3io/wp/ shadows the namespace and makes its
+    # siblings unimportable.
+    #
+    # The sibling repositories run a three-way coexistence check that installs
+    # all three wheels into one interpreter. This package CANNOT: it is first in
+    # the release order, so l3io-wp-database and l3io-wp-backup are not on the
+    # index yet and `--with` would fail on resolution, not on the invariant.
+    # What is checkable here is that THIS distribution ships no marker, which is
+    # this package's entire contribution to the invariant. The cross-package
+    # check runs in the later pipelines, where the siblings exist.
+    name: namespace hygiene
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: dist, path: dist }
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.6"
+      - name: this distribution ships no namespace marker
+        run: |
+          set -euo pipefail
+          uv run --isolated --no-project \
+                 --with "$(ls dist/*.whl)" \
+                 python - <<'PY'
+          import pathlib, sys
+          import l3io, l3io.wp, l3io.wp.config
+          for pkg in (l3io, l3io.wp):
+              for entry in pkg.__path__:
+                  marker = pathlib.Path(entry) / "__init__.py"
+                  if marker.exists():
+                      sys.exit(f"AD-27 — {marker} shadows the PEP 420 namespace")
+          print("namespace ok:", list(l3io.wp.__path__))
+          PY
+
+  publish-testpypi:
+    name: publish to TestPyPI
+    runs-on: ubuntu-latest
+    needs: [smoke, namespace]
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/l3io-wp-config
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: dist, path: dist }
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    name: publish to PyPI
+    runs-on: ubuntu-latest
+    needs: [smoke, namespace]
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    environment:
+      name: pypi
+      url: https://pypi.org/p/l3io-wp-config
+    permissions:
+      id-token: write   # trusted publishing — no long-lived token
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: dist, path: dist }
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  release:
+    # The GitHub release for a tagged publish, created after PyPI has accepted
+    # the distribution rather than before, so a failed upload leaves no release
+    # pointing at something that was never published.
+    name: create release
+    runs-on: ubuntu-latest
+    needs: [publish-pypi]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - uses: actions/download-artifact@v8
+        with: { name: dist, path: dist }
+      - uses: LiquidLogicLabs/git-action-release@v2
+        with:
+          tag: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          artifacts: dist/*
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-mirror:
+    # Optional internal Gitea package registry. Token auth, because a Gitea
+    # registry does not do trusted publishing. Skipped entirely when the vars
+    # and secrets are absent, so a fork or a clean clone is unaffected.
+    name: mirror to internal registry
+    runs-on: ubuntu-latest
+    needs: [smoke, namespace]
+    if: vars.PYPI_CUSTOM_URL != ''
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: dist, path: dist }
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.6"
+      - name: upload
+        env:
+          UV_PUBLISH_URL: ${{ vars.PYPI_CUSTOM_URL }}
+          UV_PUBLISH_USERNAME: ${{ secrets.PYPI_CUSTOM_USERNAME }}
+          UV_PUBLISH_PASSWORD: ${{ secrets.PYPI_CUSTOM_PASSWORD }}
+        run: uv publish dist/*

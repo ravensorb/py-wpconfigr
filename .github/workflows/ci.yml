@@ -1,0 +1,205 @@
+# l3io-wp-config CI.
+#
+# Every job here also runs locally under nektos/act with no edits. Publishing
+# lives in publish.yml, which act never runs — act ignores `job.permissions` and
+# has no OIDC, so a guard expression would not protect it. File separation is
+# the only reliable boundary.
+#
+# Gates on vars.LOCAL_ACT, never env.ACT: env.ACT does not work in a job-level
+# `if:`, and Gitea's runners also set ACT=true.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# No UV_FROZEN here. ADR-0007 specifies `uv sync --locked`, which asserts the
+# lockfile is current; UV_FROZEN says do not touch it, and uv rejects the
+# combination outright: "the argument `--locked` cannot be used with UV_FROZEN".
+#
+# UV_PROJECT_ENVIRONMENT keeps every virtualenv OUT of the workspace, at a
+# literal /tmp path: the `runner` context is step-level only and a job-level
+# `env:` referencing it fails schema validation. ~/.actrc
+# uses --bind, so the workspace is the developer's real working tree and the
+# container runs as root: without this, a local replay leaves a root-owned
+# .venv behind, and the four parallel matrix jobs race to delete each other's
+# ("failed to remove directory .venv/bin: Directory not empty"). On GitHub each
+# job owns its VM, so this changes nothing there.
+jobs:
+  static:
+    name: lint · format · types
+    runs-on: ubuntu-latest
+    env:
+      UV_PROJECT_ENVIRONMENT: /tmp/l3io-venv-static
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.6"
+          enable-cache: ${{ !vars.LOCAL_ACT }}
+      - run: uv sync --locked
+      - name: ruff lint
+        run: uv run ruff check --output-format=github src tests tools
+      - name: ruff format
+        run: uv run ruff format --check src tests tools
+      - name: mypy
+        run: uv run mypy
+
+  contracts:
+    name: architecture contracts
+    runs-on: ubuntu-latest
+    env:
+      UV_PROJECT_ENVIRONMENT: /tmp/l3io-venv-contracts
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.6"
+          enable-cache: ${{ !vars.LOCAL_ACT }}
+      - run: uv sync --locked
+
+      # AD-27, AD-1, AD-2. Scope is derived by walking the package tree, so a
+      # module added later cannot escape the rules.
+      - name: architecture contracts
+        run: uv run pytest tests/test_architecture.py -q
+
+      # AD-27 again, against the SOURCE tree, as a second independent check that
+      # does not depend on the test suite importing correctly. A marker file at
+      # either namespace level makes the sibling distributions unimportable while
+      # this package's own tests still pass.
+      - name: AD-27 no namespace marker files
+        run: |
+          set -euo pipefail
+          if [ -e src/l3io/__init__.py ] || [ -e src/l3io/wp/__init__.py ]; then
+            echo "::error::AD-27 — __init__.py at l3io/ or l3io/wp/ shadows the PEP 420 namespace"
+            exit 1
+          fi
+          echo "no namespace marker files"
+
+      # AD-2 — zero runtime dependencies, permanently. Read from pyproject rather
+      # than from an installed environment, so it holds before anything is built.
+      - name: AD-2 zero runtime dependencies
+        run: |
+          set -euo pipefail
+          uv run python - <<'PY'
+          import sys, tomllib
+          deps = tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"]
+          if deps:
+              sys.exit(f"AD-2 — runtime dependencies declared: {deps}")
+          print("zero runtime dependencies")
+          PY
+
+  namespace:
+    # AD-27 enforcement. A distribution tested ALONE cannot catch a namespace
+    # shadow: the failure appears only once two are installed together, and this
+    # package's own tests pass either way. The stub sibling means the invariant
+    # does not have to wait for l3io-wp-database to exist.
+    #
+    # Builds its own wheel rather than consuming an artifact, so it runs under
+    # act as well -- the most dangerous invariant should not be the one with no
+    # local coverage.
+    name: namespace coexistence
+    runs-on: ubuntu-latest
+    env:
+      UV_PROJECT_ENVIRONMENT: /tmp/l3io-venv-namespace
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.6"
+          enable-cache: ${{ !vars.LOCAL_ACT }}
+      - run: uv sync --locked
+      - name: stub sibling, both install shapes
+        run: uv run python tools/check_namespace_coexistence.py
+
+  test:
+    name: py${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+    env:
+      UV_PROJECT_ENVIRONMENT: /tmp/l3io-venv-py${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.6"
+          python-version: ${{ matrix.python }}
+          enable-cache: ${{ !vars.LOCAL_ACT }}
+      - run: uv sync --locked
+      - name: pytest
+        run: uv run pytest -q
+
+  verify-install:
+    # Proves the invariant that matters: the BUILT WHEEL installs into a clean
+    # isolated environment and imports. Installing the working tree would have
+    # passed throughout the entire period this package was absent from PyPI --
+    # the blind spot this closes.
+    #
+    # Builds its own wheel rather than passing one between jobs. The artifact
+    # round trip is CI plumbing, not an invariant, and act's artifact server does
+    # not speak the upload-artifact v6/v7 protocol (v5 does, but it is node20 and
+    # leaves the runner images 2026-09-23). Building here costs about a second
+    # and keeps every job in this file runnable locally under act, with nothing
+    # gated off. publish.yml is where build-once-publish-exactly-that matters,
+    # and it keeps the artifact steps.
+    name: clean install · py${{ matrix.python }}
+    runs-on: ubuntu-latest
+    needs: [static, contracts, namespace, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.6"
+          python-version: ${{ matrix.python }}
+          enable-cache: ${{ !vars.LOCAL_ACT }}
+      - run: uv build --no-sources
+      - name: install the wheel into an isolated environment and import it
+        run: |
+          set -euo pipefail
+          wheel=$(ls dist/*.whl)
+          uv run --isolated --no-project --python "${{ matrix.python }}" \
+                 --with "$wheel" \
+                 python - <<'PY'
+          import sys
+          from l3io.wp import config
+          print("import ok", sorted(config.__all__), sys.version)
+          PY
+
+      - name: the installed tree ships no namespace marker and pulls nothing
+        # AD-27 and AD-2, proven in the INSTALLED artifact rather than the repo.
+        run: |
+          set -euo pipefail
+          wheel=$(ls dist/*.whl)
+          uv run --isolated --no-project --python "${{ matrix.python }}" \
+                 --with "$wheel" \
+                 python - <<'PY'
+          import pathlib, sys, sysconfig
+          from importlib.metadata import distributions, metadata
+
+          site = pathlib.Path(sysconfig.get_paths()["purelib"])
+          for marker in (site / "l3io" / "__init__.py", site / "l3io" / "wp" / "__init__.py"):
+              if marker.exists():
+                  sys.exit(f"AD-27 — installed tree ships {marker}")
+
+          installed = sorted(d.metadata["Name"] for d in distributions())
+          if installed != ["l3io-wp-config"]:
+              sys.exit(f"AD-2 — unexpected distributions installed: {installed}")
+
+          if metadata("l3io-wp-config").get_all("Requires-Dist"):
+              sys.exit("AD-2 — the wheel declares runtime dependencies")
+
+          print("installed tree is clean")
+          PY

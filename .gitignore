@@ -6,3 +6,16 @@ build
 dist
 htmlcov
 *.egg-info
+
+.venv
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# act local config (bootstrapped from the .example files)
+.act.vars
+.act.env
+.act.secrets
+.artifacts
+.uv-cache
+.venv-*
