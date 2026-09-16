@@ -165,6 +165,49 @@ jobs:
           print("namespace ok:", list(l3io.wp.__path__))
           PY
 
+      - name: dependency metadata is clean in BOTH artifacts
+        # AD-2 plus ADR-0007's --no-sources guarantee, checked on the bytes being
+        # shipped rather than asserted in prose. A git or path source resolving on
+        # the maintainer's machine and nowhere else is how a release breaks
+        # silently -- it is what made wpbackup2 unresolvable for six years.
+        #
+        # Inspects Requires-Dist LINES specifically. A bare grep for a hostname
+        # cries wolf: Project-URL entries and any README link embedded in the long
+        # description both contain URLs legitimately, and a check that fires on
+        # those gets switched off.
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob, sys, tarfile, zipfile
+
+          def requires(text):
+              return [l for l in text.splitlines() if l.startswith("Requires-Dist")]
+
+          wheel = glob.glob("dist/*.whl")[0]
+          z = zipfile.ZipFile(wheel)
+          wheel_md = z.read(next(n for n in z.namelist() if n.endswith("METADATA"))).decode()
+
+          sdist = glob.glob("dist/*.tar.gz")[0]
+          tf = tarfile.open(sdist)
+          sdist_md = tf.extractfile(
+              next(n for n in tf.getnames() if n.endswith("PKG-INFO"))
+          ).read().decode()
+
+          problems = []
+          for label, lines in (("wheel", requires(wheel_md)), ("sdist", requires(sdist_md))):
+              # AD-2: this package declares no runtime dependencies, permanently.
+              if lines:
+                  problems.append(f"{label} declares runtime dependencies: {lines}")
+              # And no direct reference could survive even if that ever changed.
+              for line in lines:
+                  if any(m in line for m in ("git+", "@ git", "file://", "http://", "https://")):
+                      problems.append(f"{label} carries a direct reference: {line}")
+
+          if problems:
+              sys.exit("ADR-0007 / AD-2 — " + "; ".join(problems))
+          print("dependency metadata clean in wheel and sdist")
+          PY
+
   publish-testpypi:
     name: publish to TestPyPI
     runs-on: ubuntu-latest
