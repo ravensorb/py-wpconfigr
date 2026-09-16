@@ -82,8 +82,12 @@ stop.
 ## CI conventions
 
 - Prefer `LiquidLogicLabs/*` actions over third-party ones or hand-rolled `run:`
-  steps. Verify a tag exists with `git ls-remote --tags` before pinning it:
-  `astral-sh/setup-uv` has **no v10** despite the house docs once saying so.
+  steps.
+- Verify a pin with `git ls-remote --tags` and read **all** the tags, not just the
+  floating majors. `astral-sh/setup-uv` stopped publishing floating majors after
+  `v7` but has exact tags through `v10.1.0`, so `@v10` resolves nowhere while
+  `@v10.1.0` is current — and a `grep -E '^v[0-9]+$'` hides that entirely by
+  matching only floating majors. Not every publisher ships them; `actions/*` do.
 - Never set `UV_FROZEN` alongside `uv sync --locked` — uv rejects the combination.
 - Every job sets `UV_PROJECT_ENVIRONMENT` to a `/tmp` path outside the workspace.
   `~/.actrc` uses `--bind`, so without it a local replay races four matrix jobs
