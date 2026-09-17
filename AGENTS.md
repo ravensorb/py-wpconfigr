@@ -101,6 +101,27 @@ stop.
   `ci.yml`. act has no OIDC and ignores `job.permissions`, so an `if:` guard would
   not protect it.
 
+## Internal registry
+
+- Published to `https://git.ravenwolf.org/api/packages/liquidlogiclabs/pypi`, via
+  `publish.yml`'s `mirror` dispatch target. PyPI is a separate, deliberate choice.
+- **Credentials are the Gitea ones, not the `PYPI_CUSTOM_*` ones.** Infisical's
+  `PYPI_CUSTOM_USERNAME`/`PYPI_CUSTOM_PASSWORD` return **401** against this host —
+  they belong to some other registry. What works is basic auth with the username
+  plus `GITEA_TOKEN` as the password. Note Infisical carries no `GITEA_USERNAME`;
+  `~/.actrc` declares it literally.
+- A stale credential presents as a workflow bug, so test it against
+  `/api/v1/user` before debugging the YAML.
+- Reading the index: the **root** `.../pypi/simple/` is **404** — Gitea serves no
+  root listing, so that is not evidence of a wrong URL. The per-package
+  `.../pypi/simple/<name>/` is **401** unauthenticated, which is the one uv
+  resolves and the one that tells you credentials are needed. `/api/v1/version`
+  returning 200 distinguishes "instance is fine, needs auth" from "wrong host".
+- The `liquidlogiclabs` org is **limited** visibility, so every consumer and every
+  CI runner needs credentials. **A mirror is a mirror, not a home:** anything
+  publicly installable must have every dependency publicly resolvable, or
+  `pip install` of the dependent fails exactly as `wpbackup2` did.
+
 ## Known pitfalls
 
 - Read-back compares the rendered **value** text, not the whole statement.
