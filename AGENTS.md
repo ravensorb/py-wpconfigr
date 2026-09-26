@@ -106,8 +106,9 @@ stop.
 - Published to `https://git.ravenwolf.org/api/packages/liquidlogiclabs/pypi`, via
   `publish.yml`'s `mirror` dispatch target. PyPI is a separate, deliberate choice.
 - **Credentials are the Gitea ones, not the `PYPI_CUSTOM_*` ones.** Infisical's
-  `PYPI_CUSTOM_USERNAME`/`PYPI_CUSTOM_PASSWORD` return **401** against this host —
-  they belong to some other registry. What works is basic auth with the username
+  `PYPI_CUSTOM_USERNAME`/`PYPI_CUSTOM_PASSWORD` return **401** against this host.
+  Where they *do* work is unknown — not investigated — so do not go looking for the
+  registry they belong to. What works here is basic auth with the username
   plus `GITEA_TOKEN` as the password. Note Infisical carries no `GITEA_USERNAME`;
   `~/.actrc` declares it literally.
 - A stale credential presents as a workflow bug, so test it against
