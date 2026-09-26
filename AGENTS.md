@@ -45,9 +45,9 @@ stop.
 - `domain/` values and errors · `core/` pure parsing, rendering and verification ·
   `ports/` the Protocol · `adapters/` file I/O · `cli/` the command line.
 - The CLI ships **two** entry points: the `l3io-wp-config` console script declared in
-  `[project.scripts]`, and `python -m l3io.wp.config`. The console script was agreed in a
-  cross-session message and is recorded in no ADR or handoff, so this is its only written
-  home — do not remove it on the assumption it was never decided.
+  `[project.scripts]`, and `python -m l3io.wp.config`. Keep both — ADR-0007's "Console
+  scripts" section makes that the family rule: a console script named for the
+  distribution, with `python -m <import.path>` alongside rather than instead.
 - `core/` and `domain/` must import no I/O module and nothing outward of them;
   `tests/test_architecture.py` checks both by AST. (AD-1)
 
