@@ -297,7 +297,43 @@ jobs:
       - uses: astral-sh/setup-uv@v10.1.0
         with:
           version: "0.11.6"
+      # Re-publishing a version that is already in the registry must be a NO-OP, not a
+      # failure: publish-mirror runs on every tag, so a re-tag or a re-run of an existing
+      # release would otherwise fail the whole workflow on a 409 "package file already
+      # exists". That happened on the v1.5.0 tag, whose artifacts were already mirrored.
+      #
+      # `uv publish --check-url` does NOT solve it here — verified: the check URL is the
+      # authenticated simple index, the check does not receive the publish credentials, and
+      # uv falls through to uploading and 409s anyway.
+      #
+      # The API URL is derived from vars.PYPI_CUSTOM_URL rather than hardcoded, so the two
+      # cannot drift. A non-Gitea index has no /api/v1/ equivalent and answers 404, which
+      # degrades to "publish and let the server decide" — the previous behaviour.
+      - name: is this version already in the registry?
+        id: mirrored
+        env:
+          REGISTRY_URL: ${{ vars.PYPI_CUSTOM_URL }}
+          REG_USER: ${{ secrets.PYPI_CUSTOM_USERNAME }}
+          REG_PASS: ${{ secrets.PYPI_CUSTOM_PASSWORD }}
+        run: |
+          set -euo pipefail
+          name=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
+          version=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          api=$(printf '%s' "$REGISTRY_URL" | sed 's#/api/packages/#/api/v1/packages/#')
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+                   -u "$REG_USER:$REG_PASS" "$api/$name/$version/files")
+          echo "$name $version -> http $code"
+          # Skip ONLY on an explicit 200. Anything else (404, or a transport error) means
+          # publish and let the registry be the authority, rather than skipping on ambiguity.
+          if [ "$code" = "200" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$name $version is already in the registry — skipping upload"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: upload
+        if: steps.mirrored.outputs.present != 'true'
         env:
           UV_PUBLISH_URL: ${{ vars.PYPI_CUSTOM_URL }}
           UV_PUBLISH_USERNAME: ${{ secrets.PYPI_CUSTOM_USERNAME }}
