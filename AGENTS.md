@@ -31,10 +31,10 @@ stop.
   and also fails when the tag and `pyproject.toml` disagree.
 - Do not widen the parser beyond `define()` and simple file-scope variable
   assignments, and do not add a runtime dependency for any reason.
-- Keep `Copyright (c) 2018 Cariad Eccleston` in `LICENSE` — MIT requires it — and
-  credit the fork origin in `README.md`, naming upstream's own successor
-  `wpconfigger`. `README.md` still carries upstream's badge and install
-  instructions; it has not been rewritten yet.
+- Keep `Copyright (c) 2018 Cariad Eccleston` in `LICENSE` — MIT requires it — and keep
+  `README.md`'s credit to the fork origin, naming upstream's own successor
+  `wpconfigger`. Anyone wanting the original author's maintained package should be
+  sent there, not here.
 
 ## Where things are
 
@@ -44,12 +44,16 @@ stop.
   `_bmad-output/planning-artifacts/architecture/architecture-py-wordpress-backup-2026-09-15/ARCHITECTURE-SPINE.md`.
 - `domain/` values and errors · `core/` pure parsing, rendering and verification ·
   `ports/` the Protocol · `adapters/` file I/O · `cli/` the command line.
+- The CLI ships **two** entry points: the `l3io-wp-config` console script declared in
+  `[project.scripts]`, and `python -m l3io.wp.config`. The console script was agreed in a
+  cross-session message and is recorded in no ADR or handoff, so this is its only written
+  home — do not remove it on the assumption it was never decided.
 - `core/` and `domain/` must import no I/O module and nothing outward of them;
   `tests/test_architecture.py` checks both by AST. (AD-1)
 
 ## Running and verifying
 
-- `uv sync --locked` then `uv run pytest`. Expect **82 passing at ~90% coverage**.
+- `uv sync --locked` then `uv run pytest`. Expect **85 passing at ~92% coverage**.
 - **Do not run `uv self update`.** `[tool.uv] required-version` pins `==0.11.6` to
   match CI; a different uv writes a lock CI rejects. Change both together or neither.
 - `make check` runs lint, types, contracts and tests — everything CI's static,
