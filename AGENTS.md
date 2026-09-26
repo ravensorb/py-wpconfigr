@@ -122,6 +122,25 @@ stop.
   publicly installable must have every dependency publicly resolvable, or
   `pip install` of the dependent fails exactly as `wpbackup2` did.
 
+## How downstream repos depend on this
+
+- Use a **git source pinned to a `rev` or `tag`**. It locks as a URL plus a commit
+  SHA with no machine-specific paths, `uv sync --locked` succeeds on a runner, and
+  the repo is public so no token is needed. `branch = "main"` re-resolves on
+  `uv lock -U`, so pin a rev or tag if the consumer must be immune to pushes here.
+- **Never a path source.** It lives in a committed `pyproject.toml`, so CI fails
+  with `Distribution not found at: file:///...` — the runner has no such directory,
+  and a relative `../py-wpconfigr` only moves the problem.
+- **Never `UV_FIND_LINKS`.** It resolves, but the lock records
+  `source = { registry = "/home/.../dist" }` — an absolute local path that looks
+  portable and is not. Worse than the path source for that reason.
+- Either way `uv build --no-sources` keeps the arrangement out of published
+  metadata; verified, `Requires-Dist` carries no git URL. But it does **not** strip
+  `[tool.uv.sources]` from the `pyproject.toml` inside the sdist, so that guarantee
+  rests on installer behaviour, not on the artifact being clean.
+- GitHub Packages is not an option: it has no Python registry, and the API rejects
+  `package_type=pypi` with 422. Do not re-propose it.
+
 ## Known pitfalls
 
 - Read-back compares the rendered **value** text, not the whole statement.
