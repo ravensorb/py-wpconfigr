@@ -104,6 +104,12 @@ stop.
 - `publish.yml` is a separate file and act must never run it; `.actrc` pins act to
   `ci.yml`. act has no OIDC and ignores `job.permissions`, so an `if:` guard would
   not protect it.
+- A `run:` block's text, **comments included**, exists in three places: the file, the
+  parsed step, and the execution log — GitHub echoes the script before running it. So
+  grepping a run log for a step's *output* matches the echoed script first. Anchor on
+  the output's own wording, not on a phrase that also appears in the script. The same
+  property means shell comments inside `run:` reach the log (useful when a step fails)
+  but trip filename-based audits, while a YAML comment above the step does neither.
 
 ## Internal registry
 
