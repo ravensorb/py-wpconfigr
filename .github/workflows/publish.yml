@@ -317,8 +317,17 @@ jobs:
           REG_PASS: ${{ secrets.PYPI_CUSTOM_PASSWORD }}
         run: |
           set -euo pipefail
-          name=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
-          version=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          # Name and version come from the WHEEL FILENAME, not pyproject.toml: this job
+          # downloads the artifact and never checks out the repo, so pyproject.toml does not
+          # exist here. It is also the better source — the question is whether THESE files
+          # are already in the registry, not what the repo currently declares.
+          read -r name version < <(python3 - <<'PY'
+          import glob, pathlib, re
+          stem = pathlib.Path(sorted(glob.glob("dist/*.whl"))[0]).name
+          dist, ver = stem.split("-")[0], stem.split("-")[1]
+          print(re.sub(r"[-_.]+", "-", dist).lower(), ver)   # PEP 503 normalisation
+          PY
+          )
           api=$(printf '%s' "$REGISTRY_URL" | sed 's#/api/packages/#/api/v1/packages/#')
           code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
                    -u "$REG_USER:$REG_PASS" "$api/$name/$version/files")
