@@ -97,6 +97,11 @@ A handoff is read as settled fact, so the distinction is drawn explicitly.
 
 - [done] Everything durable is in this repo: `AGENTS.md` for invariants and traps, this file
   for session state. Both in a public repo, readable without credentials.
+- [done] **Nothing was left in `/tmp` worth keeping.** The scratchpad held 64 KB of throwaway
+  verification environments — stub siblings, scratch venvs, act logs — and every finding from
+  them is committed: the coexistence stub became `tools/check_namespace_coexistence.py`, which
+  builds its own. `/tmp` is tmpfs and clears on reboot; that costs this repo nothing. If you
+  are reading this after a reboot, no artifact of this session was lost.
 - [blocked] **Do not write this session's findings to the shared basic-memory KB.** A
   home-lab session asked twice, relaying an instruction from Shawn that this session never
   received. He was then asked directly and chose "it stays in this repo." Nothing of this
