@@ -401,7 +401,7 @@ jobs:
         #
         # Written to a file rather than an output because the entry contains
         # backticks, pipes and quotes that a YAML expression mangles.
-        uses: LiquidLogicLabs/git-action-changelog-parser@v3
+        uses: LiquidLogicLabs/git-action-changelog-parser@v2
         with:
           path: CHANGELOG.md
           version: ${{ steps.version.outputs.number }}
