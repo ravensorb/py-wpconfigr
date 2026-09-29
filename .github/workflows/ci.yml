@@ -39,6 +39,7 @@ jobs:
       UV_PROJECT_ENVIRONMENT: /tmp/l3io-venv-static
     steps:
       - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }  # hatch-vcs needs tags; shallow yields 0.1.devN
       - uses: astral-sh/setup-uv@v10.1.0
         with:
           version: "0.11.6"
@@ -58,6 +59,7 @@ jobs:
       UV_PROJECT_ENVIRONMENT: /tmp/l3io-venv-contracts
     steps:
       - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }  # hatch-vcs needs tags; shallow yields 0.1.devN
       - uses: astral-sh/setup-uv@v10.1.0
         with:
           version: "0.11.6"
@@ -110,6 +112,7 @@ jobs:
       UV_PROJECT_ENVIRONMENT: /tmp/l3io-venv-namespace
     steps:
       - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }  # hatch-vcs needs tags; shallow yields 0.1.devN
       - uses: astral-sh/setup-uv@v10.1.0
         with:
           version: "0.11.6"
@@ -129,6 +132,7 @@ jobs:
       UV_PROJECT_ENVIRONMENT: /tmp/l3io-venv-py${{ matrix.python }}
     steps:
       - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }  # hatch-vcs needs tags; shallow yields 0.1.devN
       - uses: astral-sh/setup-uv@v10.1.0
         with:
           version: "0.11.6"
@@ -160,6 +164,7 @@ jobs:
         python: ['3.11', '3.12', '3.13', '3.14']
     steps:
       - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }  # hatch-vcs needs tags; shallow yields 0.1.devN
       - uses: astral-sh/setup-uv@v10.1.0
         with:
           version: "0.11.6"
@@ -169,7 +174,17 @@ jobs:
       - name: install the wheel into an isolated environment and import it
         run: |
           set -euo pipefail
-          wheel=$(ls dist/*.whl)
+          # Exactly one wheel, asserted rather than assumed. `ls dist/*.whl`
+          # returns every match, so a stale artifact silently expands to two
+          # paths; with no match it returns the literal glob. A real runner
+          # starts empty; act binds the working tree, which is how this surfaced.
+          count=$(find dist -maxdepth 1 -name '*.whl' | wc -l)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly one wheel in dist/, found $count"
+            find dist -maxdepth 1 -name '*.whl'
+            exit 1
+          fi
+          wheel=$(find dist -maxdepth 1 -name '*.whl')
           uv run --isolated --no-project --python "${{ matrix.python }}" \
                  --with "$wheel" \
                  python - <<'PY'
@@ -182,7 +197,17 @@ jobs:
         # AD-27 and AD-2, proven in the INSTALLED artifact rather than the repo.
         run: |
           set -euo pipefail
-          wheel=$(ls dist/*.whl)
+          # Exactly one wheel, asserted rather than assumed. `ls dist/*.whl`
+          # returns every match, so a stale artifact silently expands to two
+          # paths; with no match it returns the literal glob. A real runner
+          # starts empty; act binds the working tree, which is how this surfaced.
+          count=$(find dist -maxdepth 1 -name '*.whl' | wc -l)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly one wheel in dist/, found $count"
+            find dist -maxdepth 1 -name '*.whl'
+            exit 1
+          fi
+          wheel=$(find dist -maxdepth 1 -name '*.whl')
           uv run --isolated --no-project --python "${{ matrix.python }}" \
                  --with "$wheel" \
                  python - <<'PY'

@@ -95,24 +95,35 @@ jobs:
           version-type: regex
           version-regex: '^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$'
 
-      - name: version is at or above the 1.5.0 floor, and agrees with any tag
+      - name: the tag is at or above the 1.5.0 floor
+        # The floor survives: PyPI burned 1.4 permanently, so nothing at or below
+        # it may be published again.
+        #
+        # Checked against the TAG, not pyproject. The tag is now the version
+        # (AD-30), pyproject carries no literal, and the previous spelling --
+        # tomllib.load(...)["project"]["version"] -- raises KeyError the moment
+        # the version becomes dynamic. Loud rather than silent, but broken.
+        #
+        # The tag/artifact agreement that used to live here moved to `smoke`,
+        # where the built wheel exists: comparing the tag to a value the build
+        # did not actually use cannot detect a build that derived a different one.
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           TAG_VERSION: ${{ steps.semver.outputs.version }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import os, sys, tomllib
-
-          declared = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
-          parts = tuple(int(n) for n in declared.split(".")[:2])
-          if parts < (1, 5):
-              sys.exit(f"version {declared} is below the 1.5.0 floor; PyPI burned 1.4 permanently")
+          import os, sys
 
           tag = (os.environ.get("TAG_VERSION") or "").lstrip("v")
-          if tag and tag != declared:
-              sys.exit(f"tag {tag} does not match pyproject version {declared}")
+          if not tag:
+              sys.exit("the tag version was not parsed; refusing to guess")
 
-          print(f"version {declared} accepted" + (f" (tag {tag})" if tag else " (no tag)"))
+          parts = tuple(int(n) for n in tag.split(".")[:2])
+          if parts < (1, 5):
+              sys.exit(f"tag {tag} is below the 1.5.0 floor; PyPI burned 1.4 permanently")
+
+          print(f"tag {tag} is at or above the 1.5.0 floor")
           PY
 
   build:
@@ -154,11 +165,72 @@ jobs:
         with:
           version: "0.11.6"
           python-version: ${{ matrix.python }}
-      - run: |
+      - name: install, import, and agree on one version
+        run: |
           set -euo pipefail
+          # Exactly one wheel, asserted rather than assumed. `ls dist/*.whl`
+          # returns every match, so a stale artifact silently expands to two
+          # paths; with no match it returns the literal glob.
+          count=$(find dist -maxdepth 1 -name '*.whl' | wc -l)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly one wheel in dist/, found $count"
+            find dist -maxdepth 1 -name '*.whl'
+            exit 1
+          fi
+          wheel=$(find dist -maxdepth 1 -name '*.whl')
           uv run --isolated --no-project --python "${{ matrix.python }}" \
-                 --with "$(ls dist/*.whl)" \
-                 python -c "from l3io.wp import config; print('import ok', sorted(config.__all__))"
+                 --with "$wheel" \
+                 python - <<'PY'
+          from importlib.metadata import version
+          from l3io.wp import config
+          attr = config.__version__
+          dist = version("l3io-wp-config")
+          if attr != dist:
+              raise SystemExit(
+                  f"version drift: l3io.wp.config.__version__ is {attr!r} "
+                  f"but the l3io-wp-config distribution reports {dist!r}"
+              )
+          print("import ok", sorted(config.__all__))
+          print(f"one version: {attr}")
+          PY
+
+      - name: the artifact is at or above the 1.5.0 floor
+        # Checked on the ARTIFACT, which covers every trigger -- a dispatch build
+        # has no tag for version-gate to check, and this is the value that would
+        # actually reach a registry.
+        run: |
+          set -euo pipefail
+          wheel=$(find dist -maxdepth 1 -name '*.whl')
+          built=$(uv run --isolated --no-project --python "${{ matrix.python }}" \
+                    --with "$wheel" \
+                    python -c "from importlib.metadata import version; print(version('l3io-wp-config'))")
+          python3 - "$built" <<'PY'
+          import sys
+          from packaging.version import Version
+          built = Version(sys.argv[1])
+          if built.release[:2] < (1, 5):
+              raise SystemExit(f"built version {built} is below the 1.5.0 floor; PyPI burned 1.4 permanently")
+          print(f"built version {built} is at or above the floor")
+          PY
+
+      - name: a tag must agree with the artifact it publishes
+        # The authoritative tag check. Compares the tag against the wheel's own
+        # metadata, so it covers the tag, pyproject's dynamic resolution and
+        # hatch-vcs's derivation in one assertion -- and catches a shallow
+        # checkout, which silently derives 0.1.devN with the job green.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          wheel=$(find dist -maxdepth 1 -name '*.whl')
+          built=$(uv run --isolated --no-project --python "${{ matrix.python }}" \
+                    --with "$wheel" \
+                    python -c "from importlib.metadata import version; print(version('l3io-wp-config'))")
+          tagged="${GITHUB_REF_NAME#v}"
+          if [ "$built" != "$tagged" ]; then
+            echo "::error::tag $tagged does not match the built version $built"
+            exit 1
+          fi
+          echo "tag and artifact agree on $built"
 
   namespace:
     # AD-27 — the l3io.wp namespace is PEP 420 native. A distribution shipping an
@@ -184,8 +256,17 @@ jobs:
       - name: this distribution ships no namespace marker
         run: |
           set -euo pipefail
+          # Exactly one wheel, asserted rather than assumed: `ls dist/*.whl`
+          # expands to every match, so a stale artifact makes this a nonsense
+          # argument, and with no match it yields the literal glob.
+          count=$(find dist -maxdepth 1 -name '*.whl' | wc -l)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly one wheel in dist/, found $count"
+            find dist -maxdepth 1 -name '*.whl'
+            exit 1
+          fi
           uv run --isolated --no-project \
-                 --with "$(ls dist/*.whl)" \
+                 --with "$(find dist -maxdepth 1 -name '*.whl')" \
                  python - <<'PY'
           import pathlib, sys
           import l3io, l3io.wp, l3io.wp.config
@@ -305,12 +386,37 @@ jobs:
         with: { fetch-depth: 0 }
       - uses: actions/download-artifact@v8
         with: { name: dist, path: dist }
+
+      - name: the version without its v prefix
+        id: version
+        run: |
+          set -euo pipefail
+          echo "number=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: read this version's entry from the changelog
+        # Makes "update the changelog before releasing" a gate rather than a
+        # habit: validation-level=error fails when CHANGELOG.md has no entry for
+        # the tag. release.yml checks the same thing BEFORE creating the tag, so
+        # normally this never fires -- it is the backstop for a hand-pushed tag.
+        #
+        # Written to a file rather than an output because the entry contains
+        # backticks, pipes and quotes that a YAML expression mangles.
+        uses: LiquidLogicLabs/git-action-changelog-parser@v3
+        with:
+          path: CHANGELOG.md
+          version: ${{ steps.version.outputs.number }}
+          validation-level: error
+          output-file: .release-notes.md
+
       - uses: LiquidLogicLabs/git-action-release@v2
         with:
           tag: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           artifacts: dist/*
           token: ${{ secrets.GITHUB_TOKEN }}
+          # The hand-written entry, not generated notes: the changelog records
+          # why a behaviour changed, which a commit list cannot reconstruct.
+          body-file: .release-notes.md
 
   publish-mirror:
     # Optional internal Gitea package registry. Token auth, because a Gitea

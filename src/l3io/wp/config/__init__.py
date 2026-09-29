@@ -6,6 +6,7 @@ writes -- not a PHP parser. ADR-0010 records the documented limits and the
 read-back verification that guards them.
 """
 
+from l3io.wp.config._version import __version__
 from l3io.wp.config.adapters.config_file import WpConfigFile
 from l3io.wp.config.core.config_string import WpConfigString
 from l3io.wp.config.domain.errors import (
@@ -18,6 +19,7 @@ from l3io.wp.config.domain.errors import (
 from l3io.wp.config.domain.values import MISSING, ConfigValue, MissingType
 
 __all__ = [
+    "__version__",
     "MISSING",
     "ConfigReadError",
     "ConfigValue",
