@@ -8,6 +8,13 @@
 # and ignores job.permissions, so it cannot run the publish jobs meaningfully
 # and would fail in a way that looks like a workflow bug.
 
+# act's artifact server binds a FIXED port (34567) from a global default, so two act
+# runs anywhere on this machine collide with "bind: address already in use" — and it
+# starts even for a workflow that uses no artifacts, merely because ~/.actrc sets
+# --artifact-server-path. Port 0 lets the OS pick a free one, so a local replay here is
+# immune to other sessions replaying their own CI at the same time.
+--artifact-server-port 0
+
 --var-file .act.vars
 --env-file .act.env
 --secret-file .act.secrets
