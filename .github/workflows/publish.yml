@@ -10,8 +10,9 @@
 # l3io-wp-database, then l3io-wp-backup. This package is FIRST — nothing else
 # can publish until it resolves from the index.
 #
-# Version must be >= 1.5.0. PyPI burns filenames permanently, so the fork's 1.4
-# can never be re-uploaded.
+# There is no version floor: this publishes as `l3io-wp-config`, a name that has
+# never been published, so no version is spent for it. The tag is the version
+# (AD-30), and a tagged publish must ship a final version rather than a dev build.
 
 name: Publish
 
@@ -66,7 +67,7 @@ jobs:
           fi
 
   version-gate:
-    # The handoff requires version >= 1.5.0: PyPI burns filenames permanently, so
+    # Runs for BOTH triggers; the tag steps skip on a dispatch. (no floor)
     # the fork's 1.4 can never be re-uploaded. That was prose in AGENTS.md; here
     # it is a gate.
     #
@@ -95,9 +96,13 @@ jobs:
           version-type: regex
           version-regex: '^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$'
 
-      - name: the tag is at or above the 1.5.0 floor
-        # The floor survives: PyPI burned 1.4 permanently, so nothing at or below
-        # it may be published again.
+      - name: the tag version parsed
+        # There is no version floor. The old one refused anything below 1.5.0 on the
+        # grounds that PyPI burned 1.4 -- true of the `wpconfigr` distribution, which
+        # ADR-0002 planned to reclaim and ADR-0012 superseded. This publishes as
+        # `l3io-wp-config`, which has never been published (PyPI 404), so no version
+        # is spent for this name and the floor was guarding a premise that no longer
+        # holds.
         #
         # Checked against the TAG, not pyproject. The tag is now the version
         # (AD-30), pyproject carries no literal, and the previous spelling --
@@ -119,11 +124,7 @@ jobs:
           if not tag:
               sys.exit("the tag version was not parsed; refusing to guess")
 
-          parts = tuple(int(n) for n in tag.split(".")[:2])
-          if parts < (1, 5):
-              sys.exit(f"tag {tag} is below the 1.5.0 floor; PyPI burned 1.4 permanently")
-
-          print(f"tag {tag} is at or above the 1.5.0 floor")
+          print(f"tag version parsed as {tag}")
           PY
 
   build:
@@ -194,10 +195,16 @@ jobs:
           print(f"one version: {attr}")
           PY
 
-      - name: the artifact is at or above the 1.5.0 floor
-        # Checked on the ARTIFACT, which covers every trigger -- a dispatch build
-        # has no tag for version-gate to check, and this is the value that would
-        # actually reach a registry.
+      - name: a tagged publish must not ship a dev version
+        # This replaces a 1.5.0 floor whose premise is gone (see version-gate). The
+        # floor was also catching something real BY SIDE EFFECT: a dev build derives
+        # 0.1.devN, whose release tuple (0, 1) fell below it, so deleting the floor
+        # outright would let a dev build publish as a release.
+        #
+        # Conditioned on a tag, because a dev build reaching the internal mirror is
+        # deliberate -- `make release dev` exists to do exactly that, with no tag and
+        # no GitHub release.
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           set -euo pipefail
           wheel=$(find dist -maxdepth 1 -name '*.whl')
@@ -208,9 +215,9 @@ jobs:
           import sys
           from packaging.version import Version
           built = Version(sys.argv[1])
-          if built.release[:2] < (1, 5):
-              raise SystemExit(f"built version {built} is below the 1.5.0 floor; PyPI burned 1.4 permanently")
-          print(f"built version {built} is at or above the floor")
+          if built.is_devrelease or built.is_prerelease:
+              raise SystemExit(f"built version {built} is a dev/pre-release; a tag must ship a final version")
+          print(f"built version {built} is a final release")
           PY
 
       - name: a tag must agree with the artifact it publishes
