@@ -21,11 +21,10 @@ All commands output JSON to stdout. Errors go to stderr with non-zero exit code.
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
-
 
 STATE_FILE = "_bmad/sync-state.yaml"
 
@@ -49,7 +48,7 @@ def save_state(project_root: Path, state: dict) -> None:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def cmd_list(project_root: Path, _args: list[str]) -> int:

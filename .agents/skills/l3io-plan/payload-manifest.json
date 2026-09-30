@@ -1,5 +1,5 @@
 {
-  "version": "3.1.3",
+  "version": "3.2.1",
   "generated_from": "skills/_shared/",
   "files": {
     "references/config-resolution.md": "7636a63b75d009634094be83a2a405c9e5df0a52ed1ccbe22a0dda3db0f5757b",
@@ -9,7 +9,7 @@
     "steps/shared/step-estimate.md": "dc361f48af47290aace3c10e9aa42cfd4201941cd976ea200f4ec7c25a8ea94a",
     "steps/plan/step-backlog-intake.md": "cfc46f755ff86b83c51912038588e4b47bf9cf408d3c32253dd82d816f345080",
     "steps/plan/step-02-readiness-check.md": "1f58dbb515ecb5299c554c1194aa524ca47311e6c2c5299d584128a88e5d3ef9",
-    "steps/plan/step-03-story-elaboration.md": "3b9294f41fb2baa54c2c6cd2d53f573b6747c7bc5be316ac116431497dfc263a",
+    "steps/plan/step-03-story-elaboration.md": "684f82dd480ea0b1c77a0eec35e145cda0ed368fc5dbc23e45ea48699b0c4315",
     "steps/plan/step-04-load-state.md": "82458b69ba91e38d4b5df46df12d9c8582621dba2fa6320850ce72ad5eb66004",
     "steps/plan/step-05-dependency-graph.md": "431fefabcbd8295a756afd6523596dbfc6b579add43624a2409853b6fb585e26",
     "steps/plan/step-06-plan-output.md": "6a7d12896c9d4f5557119d701d150f30246b3cde52dbbdb00163da2d1c32a19a",

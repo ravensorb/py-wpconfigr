@@ -20,7 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import date
+from datetime import UTC, datetime
 from pathlib import Path
 
 # --- Agent-specific configuration ---
@@ -227,7 +227,6 @@ def main():
 
     # Sanctum subdirectories
     sanctum_refs = sanctum_path / "references"
-    sanctum_refs_path = "./references"
 
     result["sanctum"] = str(sanctum_path)
 
@@ -248,7 +247,7 @@ def main():
         resolve_core_config(project_root, result["warnings"])
 
     # Build variable substitution map
-    today = date.today().isoformat()
+    today = datetime.now(UTC).date().isoformat()
     variables = {
         "user_name": args.user_name or config.get("user_name") or "friend",
         "communication_language":

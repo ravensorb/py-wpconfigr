@@ -1,5 +1,5 @@
 {
-  "version": "3.1.3",
+  "version": "3.2.1",
   "generated_from": "skills/_shared/",
   "files": {
     "references/config-resolution.md": "7636a63b75d009634094be83a2a405c9e5df0a52ed1ccbe22a0dda3db0f5757b",
@@ -20,6 +20,6 @@
     "references/status-files.md": "495ea5b82886892a1da0c33d83f1adc995ed5a794f7c8ef9aba04951c620c220",
     "references/metrics-contract.md": "fd31b35d4ed5f31037fed0b58038d2d59262bd820274b9088f654b8bd90abb31",
     "references/calibration-model.md": "e3fc8d9fc41285bca19257f0ac796856e025e9992ce6401a5c41437f55830f27",
-    "scripts/spec-align.py": "f0fac0a9f0e89ac55c9ee619c5c5572049ea99a0f6ba035e034926aee7f8b87f"
+    "scripts/spec-align.py": "a9a84e8b9d11a5ce54dbc0d974027defe5f5cbddeda3eeb786ff750d7e1dc017"
   }
 }

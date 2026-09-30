@@ -25,7 +25,7 @@ From `{planning_artifacts}/readiness-report.md`, extract all stories with an Amb
 
 That set includes stories whose document **does not exist yet** — step 02 grades an absent document Amber precisely so it reaches this step, because §4 below is the only place that creates one. Do not filter them out for having no file to read: a missing file is the input §4 is written for, not a malformed finding.
 
-For each thin story, record: `key`, `title`, the path to its story file (`{implementation_artifacts}/epic-{nnn}/sprint-{nn}/stories/{story_key}.md`).
+For each thin story, record: `key`, `title`, the path to its story file (`{implementation_artifacts}/epic-{nnn}/sprint-{nn}/stories/{story_key}[-{slug}].md` — bare canonical or with optional trailing slug; both shapes are accepted by every reader).
 
 ## 3. Confirm with user (unless auto_elaborate = true)
 

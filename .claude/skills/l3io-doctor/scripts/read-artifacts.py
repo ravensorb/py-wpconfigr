@@ -117,7 +117,7 @@ def _state_paths(state_root):
     return story_keys, sprint_keys, epic_keys
 
 
-def read(artifacts_dir: Path, state_root: Path = None) -> list:
+def read(artifacts_dir: Path, state_root: Path | None = None) -> list:
     """Derive records from a tree of story artifacts.
 
     When `state_root` is given, story files whose key already has a state node are

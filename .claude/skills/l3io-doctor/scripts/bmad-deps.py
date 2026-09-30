@@ -148,7 +148,7 @@ def read_manifest(project_root: str):
     try:
         with open(mf, encoding="utf-8") as fh:
             data = YAML(typ="safe").load(fh) or {}
-    except Exception:
+    except Exception:  # noqa: BLE001 -- an unreadable manifest means 'unknown', not a crash
         return None
     inst = data.get("installation") or {}
     raw_modules = [m for m in (data.get("modules") or []) if isinstance(m, dict)]

@@ -95,7 +95,7 @@ def detect(artifacts_dir: Path, project_root: Path) -> str:
 
 
 def gather(layout: str, artifacts_dir: Path, project_root: Path,
-           state_root: Path = None) -> list:
+           state_root: Path | None = None) -> list:
     """Run the reader for `layout`. An unknown layout yields zero records.
 
     `state_root` is consumed by the artifacts reader when given, so an additive
@@ -253,7 +253,7 @@ def write(plan: dict, state_root: Path, pm_status: str):
             argv += ["--origin", rec["origin"],
                      "--origin-note", rec.get("origin_note", "")]
 
-        proc = subprocess.run(argv, capture_output=True, text=True)
+        proc = subprocess.run(argv, capture_output=True, check=False, text=True)
         if proc.returncode != 0:
             errors.append(
                 f"{rec['kind']} {rec['key']}: exit {proc.returncode} -- "
@@ -282,7 +282,7 @@ def _apply_extras(rec: dict, state_root: Path, pm_status: str) -> list:
                     "--state-root", str(state_root),
                     "--field", field, "--value", str(value)]
             argv += _node_argv(rec)
-            proc = subprocess.run(argv, capture_output=True, text=True)
+            proc = subprocess.run(argv, capture_output=True, check=False, text=True)
             if proc.returncode != 0:
                 errors.append(
                     f"{rec['kind']} {rec['key']}: set-field {field}= failed -- "
@@ -296,7 +296,7 @@ def _apply_extras(rec: dict, state_root: Path, pm_status: str) -> list:
             argv += _node_argv(rec)
             for item in items:
                 argv += ["--add", str(item)]
-            proc = subprocess.run(argv, capture_output=True, text=True)
+            proc = subprocess.run(argv, capture_output=True, check=False, text=True)
             if proc.returncode != 0:
                 errors.append(
                     f"{rec['kind']} {rec['key']}: set-depends-on failed -- "
@@ -328,7 +328,7 @@ def _apply_extras(rec: dict, state_root: Path, pm_status: str) -> list:
                     f"NOTE {rec['kind']} {rec['key']}: estimate {', '.join(dropped)} not "
                     f"carried -- cost is derived from tokens at capture time, never stored "
                     f"from a source.\n")
-            proc = subprocess.run(argv, capture_output=True, text=True)
+            proc = subprocess.run(argv, capture_output=True, check=False, text=True)
             if proc.returncode != 0:
                 errors.append(
                     f"{rec['kind']} {rec['key']}: set-estimate failed -- "
@@ -358,7 +358,7 @@ def _apply_extras(rec: dict, state_root: Path, pm_status: str) -> list:
             dropped = []
             for k, v in value.items():
                 key = str(k)
-                if key.startswith("cost") or key.startswith("tokens"):
+                if key.startswith(("cost", "tokens")):
                     dropped.append(key)
                     continue
                 argv += [f"--{key.replace('_', '-')}", str(v)]
@@ -368,7 +368,7 @@ def _apply_extras(rec: dict, state_root: Path, pm_status: str) -> list:
                     f"-- cost is derived, and a legacy token total cannot be split into the "
                     f"four classes set-actual requires, so tokens land as the N/A sentinel "
                     f"rather than a fabricated split.\n")
-            proc = subprocess.run(argv, capture_output=True, text=True)
+            proc = subprocess.run(argv, capture_output=True, check=False, text=True)
             if proc.returncode != 0:
                 errors.append(
                     f"{rec['kind']} {rec['key']}: import-actual failed -- "
@@ -424,7 +424,7 @@ def verify_against_plan(plan: dict, state_root: Path) -> list:
             continue
         try:
             node = YAML(typ="safe").load(found.read_text(encoding="utf-8"))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- one unreadable node is reported, the verify continues
             problems.append(f"{rec['kind']} {rec['key']}: unreadable on disk -- {exc}")
             continue
         if not isinstance(node, dict):

@@ -39,6 +39,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import UTC
 
 INDEX_FORMAT = 1
 INDEX_REL = os.path.join("spec", "spec-index.md")
@@ -161,7 +162,7 @@ def md():
 
 
 class Section:
-    __slots__ = ("level", "title", "anchor", "start", "end", "summary")
+    __slots__ = ("anchor", "end", "level", "start", "summary", "title")
 
     def __init__(self, level, title, anchor, start, end, summary):
         self.level, self.title, self.anchor = level, title, anchor
@@ -396,7 +397,7 @@ DIMENSIONS = (
 )
 TAC_HEADING = "Technical acceptance criteria"
 SPEC_LINE_RE = re.compile(r"^\s*(?:[-*]\s+)?Spec:\s*(.*?)\s*$")
-NONE_RE = re.compile(r"^none\s*(?:—|--|-)\s*(\S.*)$", re.I)
+NONE_RE = re.compile(r"^none\s*(?:—|--|-)\s*(\S.*)$", re.IGNORECASE)
 PTR_RE = re.compile(r"^([^\s#`]+\.md)#([^\s#`]+)$")
 NA_RE = re.compile(r"^\s*N/A\s*(?:—|--|-)\s*\S")
 
@@ -445,7 +446,7 @@ def resolve_pointer(cat, value):
 
 def story_pointers(text):
     """[(lineno, dimension, value)] for every Spec: line under a known dimension."""
-    found, dims = story_dimensions(text)
+    _found, dims = story_dimensions(text)
     out = []
     for dim in DIMENSIONS:
         for n, line in (dims.get(dim.casefold()) or (0, []))[1]:
@@ -476,8 +477,8 @@ def check_story(cat, text):
         specs = [(n, SPEC_LINE_RE.match(line).group(1)) for n, line in content
                  if SPEC_LINE_RE.match(line)]
         if not specs:
-            errs.append((h3_line, f"{dim}: no Spec: line -- end it with `Spec: <path>#<anchor>` "
-                                  f"or `Spec: none — <reason>`"))
+            errs.append((h3_line, (f"{dim}: no Spec: line -- end it with `Spec: <path>#<anchor>` "
+                                  f"or `Spec: none — <reason>`")))
             continue
         nones = [(n, v) for n, v in specs if v.lower().startswith("none")]
         if nones:
@@ -558,7 +559,7 @@ SPEC_DISPOSITIONS = ("spec-updated", "spec-proposal")
 # R1: epic findings AD-{n}; sprint findings SD-{sprint nn}-{n}, unique across an epic.
 FINDING_ID_RE = re.compile(r"^(AD-\d+|SD-\d{2}-\d+)$")
 SEVERITIES = ("BLOCKER", "MAJOR", "MINOR")
-EXPECT_RE = re.compile(r"Blocker:\s*(\d+),\s*Major:\s*(\d+),\s*Minor:\s*(\d+)", re.I)
+EXPECT_RE = re.compile(r"Blocker:\s*(\d+),\s*Major:\s*(\d+),\s*Minor:\s*(\d+)", re.IGNORECASE)
 DISP_FILE = "drift-dispositions.yaml"
 
 
@@ -729,7 +730,7 @@ ADR_META_RE = re.compile(r"^-\s+\*\*(Status|Epic|Departs from spec):\*\*\s*(.*?)
 
 def epic_key(value):
     """'E003', 'e3', '003', '3' -> 'E003'; anything else (n/a, empty) -> None."""
-    m = re.fullmatch(r"\s*E?(\d{1,3})\s*", str(value or ""), re.I)
+    m = re.fullmatch(r"\s*E?(\d{1,3})\s*", str(value or ""), re.IGNORECASE)
     return f"E{int(m.group(1)):03d}" if m else None
 
 
@@ -838,8 +839,8 @@ class LeaseHeld(Exception):
 
 
 def _now():
-    from datetime import datetime, timezone
-    return datetime.now(timezone.utc)
+    from datetime import datetime
+    return datetime.now(UTC)
 
 
 def _iso(dt):
@@ -847,9 +848,9 @@ def _iso(dt):
 
 
 def _parse_iso(s):
-    from datetime import datetime, timezone
+    from datetime import datetime
     try:
-        return datetime.strptime(str(s), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        return datetime.strptime(str(s), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
     except ValueError:
         return None
 
@@ -967,7 +968,7 @@ ISSUE_KEY_RE = re.compile(r"\b(BL-E\d{3}-\d{3})\b")
 
 def _pm(ctx, *args):
     ctx.need("pm")
-    return subprocess.run([sys.executable, ctx.pm_status, *args], capture_output=True, text=True)
+    return subprocess.run([sys.executable, ctx.pm_status, *args], capture_output=True, check=False, text=True)
 
 
 def _spec_issue_args(ctx, nnn, kind, ref, ident, title, severity, pointer, where):
@@ -975,8 +976,8 @@ def _spec_issue_args(ctx, nnn, kind, ref, ident, title, severity, pointer, where
     return ["append-issue", "--state-root", ctx.state_root, "--epic", nnn, "--sprint", "",
             "--kind", kind, "--ref", ref, "--title", f"{label}: {title}",
             "--source", f"spec-sync ({ident})", "--severity", SEV_MAP.get(severity, "Low"),
-            "--description", f"Confirm or reject: /l3io-doctor triage. Spec: {pointer}. "
-                             f"From: {where}."]
+            "--description", (f"Confirm or reject: /l3io-doctor triage. Spec: {pointer}. "
+                             f"From: {where}.")]
 
 
 def append_spec_issue(ctx, nnn, kind, ref, ident, title, severity, pointer, where):
@@ -1086,10 +1087,10 @@ def _deferred_text(it):
              f"- **Spec:** `{it['spec']}` ({it['range'] or 'pointer does not resolve'})"]
     if it["adr"]:
         lines.append(f"- **ADR:** `{it['adr']}`")
-    lines += ["- **Why deferred:** the spec-sync lease was held by another epic's closure, so "
-              "nothing was edited.", "",
-              "Apply the change the finding describes to that section, then confirm this item "
-              "in `/l3io-doctor triage`.", ""]
+    lines += [("- **Why deferred:** the spec-sync lease was held by another epic's closure, so "
+              "nothing was edited."), "",
+              ("Apply the change the finding describes to that section, then confirm this item "
+              "in `/l3io-doctor triage`."), ""]
     return "\n".join(lines)
 
 
@@ -1141,7 +1142,7 @@ class IndexLocked(Exception):
 
 def _git(ctx, *args, check=True):
     try:
-        r = subprocess.run(["git", "-C", ctx.project, *args], capture_output=True, text=True)
+        r = subprocess.run(["git", "-C", ctx.project, *args], capture_output=True, check=False, text=True)
     except OSError as e:
         raise SAError(2, f"git is not available: {e}")
     if check and r.returncode != 0:
@@ -1193,7 +1194,7 @@ def hunks_outside(hunks, sec):
 
 def _pointer_re(rel, anchor):
     return re.compile(rf"^(\s*(?:[-*]\s+)?Spec:\s*){re.escape(rel)}#{re.escape(anchor)}(\s*)$",
-                      re.M)
+                      re.MULTILINE)
 
 
 def pointing_stories(ctx, rel, anchor):
@@ -1453,10 +1454,10 @@ def _migration_plan(ctx):
 
 
 def _add_epic_line(text, ek):
-    if re.search(r"^-\s+\*\*Epic:\*\*", text, re.M):
+    if re.search(r"^-\s+\*\*Epic:\*\*", text, re.MULTILINE):
         return text
     text2, n = re.subn(r"^(-\s+\*\*Status:\*\*.*)$", rf"\1\n- **Epic:** {ek}", text,
-                       count=1, flags=re.M)
+                       count=1, flags=re.MULTILINE)
     return text2 if n else re.sub(r"^(#[^\n]*\n)", rf"\1\n- **Epic:** {ek}\n", text, count=1)
 
 

@@ -111,7 +111,7 @@ def reachability(artifacts: Path, project_root: Path) -> dict:
 
     def _git(*a):
         try:
-            r = subprocess.run(["git", "-C", str(root), *a], capture_output=True,
+            r = subprocess.run(["git", "-C", str(root), *a], capture_output=True, check=False,
                                text=True, timeout=30)
             return r
         except (OSError, subprocess.SubprocessError):

@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["ruamel.yaml>=0.18"]
 # ///
-# pm-status-version: 3.0.1   (machine-readable marker; `self-install` compares this across copies — keep at top)
+# pm-status-version: 3.2.1   (machine-readable marker; `self-install` compares this across copies — keep at top)
 """
 pm-status.py — deterministic, atomic, round-trip-safe writer for the l3io-pm
 sharded state tree, and the reader behind its progress report.
@@ -28,11 +28,18 @@ ModuleNotFoundError anywhere ruamel.yaml is not already installed globally.
 Subcommands
 -----------
   set-status    --state-root S  (--story KEY | --epic ID [--sprint ID])  --status S
-                [--title T] [--flock] [--no-events] [--session-id ID]
-                (a story set to done resolves every key in its resolves: as fixed, ref
-                the story, printing `resolved BL-...` per NEW resolution and
-                `ok BL-... already resolved (...)` per key resolved before; a failure
-                there warns, naming /l3io-util-doctor triage, and still exits 0 -- ADR-0003)
+                [--title T] [--reason "R"] [--resolution "R"]
+                [--flock] [--no-events] [--session-id ID]
+                (story transitions gated per-pair via VALID_STORY_TRANSITIONS; sprint and
+                epic keep enum-only validation. --status blocked REQUIRES --reason and is
+                permitted only from in-progress or review; the reason lands on the node
+                as blocked_reason and a paired block_open event is appended. A subsequent
+                transition off blocked clears blocked_reason and appends block_close with
+                the derived duration_hours. blocked -> done additionally REQUIRES
+                --resolution. A story set to done resolves every key in its resolves:
+                as fixed, ref the story, printing `resolved BL-...` per NEW resolution
+                and `ok BL-... already resolved (...)` per key resolved before; a failure
+                there warns, naming /l3io-doctor triage, and still exits 0 -- ADR-0003)
   sync-story-doc --artifacts-root R  (NOT the state root)  --story KEY  --status S
                 [--quiet]
                 (writes status: into the story markdown's frontmatter; the state
@@ -44,6 +51,9 @@ Subcommands
                 an existing document is left untouched, exit 0 "exists")
   import-node   --state-root S  (--story KEY | --epic ID [--sprint ID])  --status S
                 [--title T] [--classification C] [--origin {inferred}] [--origin-note N]
+                [--reason R]   (REQUIRED when --story ... --status blocked; stored as
+                                blocked_reason and in the paired block_open event; rejected
+                                on any other kind or status)
                 [--no-events] [--session-id ID]
                 (creates a missing state node from a migration record; idempotent by
                 SKIP -- an existing node is left untouched and no event is appended;
@@ -73,6 +83,19 @@ Subcommands
                 cost is DERIVED from tokens x rates — --cost/--cost-low/--cost-high are
                 declared but always rejected; use estimate-story/estimate-rollup instead)
                 [--confidence {low,medium,high}] [--flock]
+  set-depends-on --state-root S  (--story KEY | --epic ID)  --add KEY [--add KEY ...]
+                (appends to depends_on, the one LIST-shaped field: epic keys on an epic
+                node, story keys on a story node -- status-files.md §11. set-field would
+                store a list as the string "['E001']", which a reader takes for a scalar.
+                Idempotent, order preserved, all-or-nothing: every key is validated
+                before anything is written. A sprint node has no depends_on: exit 2)
+  import-actual --state-root S  --node story|sprint|epic  (--story KEY | --epic ID [--sprint ID])
+                [--elapsed-hours H] [--man-hours H] [--hitl-hours H]
+                (an actual OBSERVED ELSEWHERE, for a migration. runtime=other, tokens=N/A and
+                no calibration sample are FIXED, not flags: --runtime, --tokens-*, --model and
+                --calibrate are absent from its surface, so a call that would claim Claude
+                provenance or poison the learned ratios is a usage error rather than a silent
+                one. Delegates to set-actual, which is unchanged)
   set-field     --state-root S  (--story KEY | --epic ID [--sprint ID])  --field NAME --value V
                 (refuses any field in DERIVED_NODE_FIELDS, any sub-path of one
                 (<name>.x), or any parent path of one (completion_evidence, which would
@@ -241,15 +264,15 @@ from __future__ import annotations
 import argparse
 import contextlib
 import glob
+import hashlib
 import io
 import json
 import os
 import re
 import subprocess
 import sys
-import hashlib
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 try:
     from ruamel.yaml import YAML
@@ -260,11 +283,40 @@ except ModuleNotFoundError:  # pragma: no cover - environment guard
     )
     sys.exit(2)
 
-PM_STATUS_VERSION = "3.0.1"  # keep in sync with the top-of-file `# pm-status-version:` marker
+PM_STATUS_VERSION = "3.2.1"  # keep in sync with the top-of-file `# pm-status-version:` marker
 
-VALID_STORY_STATUS = {"backlog", "ready-for-dev", "in-progress", "review", "done"}
+VALID_STORY_STATUS = {"backlog", "ready-for-dev", "in-progress", "review", "done", "blocked"}
 VALID_SPRINT_STATUS = {"backlog", "in-progress", "done"}
 VALID_EPIC_STATUS = {"backlog", "in-progress", "done"}
+
+# Story transitions. Enforced per-story only; sprints and epics keep their existing
+# looser enum-only check because they compose from their children and their transitions
+# are driven by roll-ups, not by explicit set-status calls in the middle of a story lifecycle.
+# See docs/superpowers/specs/2026-09-25-story-lifecycle-blocked-design.md §3.
+#
+# The table gates two invariants: the blocked lifecycle (only entered from active work,
+# only exited back to work or done-with-resolution) and the terminality of done. Free
+# movement between non-blocked, non-done statuses stays allowed -- existing consumers
+# have long moved a story backwards after a fix, and forwards past review when the work
+# was small enough not to need one, and gating either would be scope creep against a
+# design whose stated goal was blocked's cleanliness.
+#
+# `blocked` can enter only from `in-progress` or `review` -- a story never picked up is
+# not blocked, it is just not ready, and its impediment belongs in state/issues.yaml.
+# `done` is terminal.
+VALID_STORY_TRANSITIONS = {
+    "backlog":       {"ready-for-dev", "in-progress", "review", "done"},
+    "ready-for-dev": {"backlog", "in-progress", "review", "done"},
+    "in-progress":   {"backlog", "ready-for-dev", "review", "done", "blocked"},
+    "review":        {"backlog", "ready-for-dev", "in-progress", "done", "blocked"},
+    "blocked":       {"in-progress", "done"},   # done requires --resolution
+    # done is "operationally reopenable" -- reopen paths, idempotent second-done, and
+    # the import-node-then-set-status ordering all move a done story to another non-
+    # blocked status. The one thing we still forbid is done -> blocked, so a story
+    # reopened for more work goes through in-progress before it can block, which keeps
+    # `blocked` entered only from active work rather than from history.
+    "done":          {"backlog", "ready-for-dev", "in-progress", "review", "done"},
+}
 METRIC_FIELDS = ("elapsed_hours", "man_hours", "hitl_hours", "tokens_k", "cost")
 
 # The subset of METRIC_FIELDS whose SCOPE ratio is learned. `cost` is derived
@@ -287,7 +339,7 @@ def _yaml() -> YAML:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _load(path: str):
@@ -368,7 +420,7 @@ def _lock_rule_present(text: str, pattern: str = _LOCK_IGNORE_LINE) -> bool:
     is a deliberate user choice and is left as written."""
     present = False
     for raw in text.split("\n"):
-        line = raw[:-1] if raw.endswith("\r") else raw
+        line = raw.removesuffix("\r")
         line = line.rstrip(" ")
         if line == pattern:
             present = True
@@ -622,7 +674,7 @@ def save_node(y, node, path: str, use_flock: bool = False) -> None:
     _flock_write_or_plain(use_flock, y, node, path)
 
 
-def check_backrefs(node, epic_key: str, sprint_key: str = None) -> list:
+def check_backrefs(node, epic_key: str, sprint_key: str | None = None) -> list:
     """Compare a node's parent back-references against its resolved location.
 
     An ABSENT back-reference is a failure, not a pass. Sprint and story files are
@@ -861,7 +913,7 @@ def _parse_iso(ts):
     if not ts:
         return None
     try:
-        return datetime.fromisoformat(str(ts).strip().replace("Z", "+00:00"))
+        return datetime.fromisoformat(str(ts).strip())
     except (TypeError, ValueError):
         return None
 
@@ -872,7 +924,7 @@ def _lock_age_minutes(claimed, now=None) -> float:
     Shared by cmd_check_lock and cmd_set_lock so their TTL arithmetic cannot diverge
     into two independently-wrong implementations.
     """
-    return ((now or datetime.now(timezone.utc)) - claimed).total_seconds() / 60.0
+    return ((now or datetime.now(UTC)) - claimed).total_seconds() / 60.0
 
 
 def build_events_index(state_root: str) -> dict:
@@ -984,7 +1036,7 @@ def open_dispatches(state_root: str, threshold_minutes: float, now=None) -> list
     except OSError as e:
         sys.stderr.write(f"pm-status.py: warning — could not read event log: {e}\n")
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     out = []
     for rec in pending.values():
         opened = _parse_iso(rec.get("ts"))
@@ -1008,7 +1060,7 @@ def dwell_hours(node, events_index: dict, now=None):
     """
     if node is None:
         return None, False
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     status = str(node.get("status", ""))
     key = str(node.get("key", ""))
     ev = (events_index or {}).get(key)
@@ -1120,7 +1172,7 @@ _CAL_LOCK = {"depth": 0, "fh": None}
 
 
 @contextlib.contextmanager
-def _file_lock(lock_path: str, depth_state: dict, state_root: str = None):
+def _file_lock(lock_path: str, depth_state: dict, state_root: str | None = None):
     """Exclusive flock over a read-modify-write cycle, reentrant per process.
 
     Extracted from calibration_lock so the ADR register can hold a lock without a
@@ -1159,7 +1211,7 @@ def _file_lock(lock_path: str, depth_state: dict, state_root: str = None):
         _ensure_lock_ignore(state_root)
     elif any(os.path.isdir(os.path.join(lock_dir, s)) for s in STATUS_DIRS):
         _ensure_lock_ignore(lock_dir)           # a bare --file that does sit in a state root
-    fh = open(lock_path, "w")
+    fh = open(lock_path, "w")  # noqa: SIM115 -- the fd outlives this statement; flock holds it until the finally
     fcntl.flock(fh, fcntl.LOCK_EX)
     depth_state["depth"], depth_state["fh"] = 1, fh
     try:
@@ -1211,7 +1263,7 @@ def notices_lock(state_root: str):
     """Hold an exclusive lock over a whole notices read-modify-write cycle.
 
     Same reasoning as calibration_lock and adr_register_lock: load -> mutate -> save is
-    not atomic, and two concurrent callers -- e.g. `l3io-pm-execute` and `l3io-pm-plan`
+    not atomic, and two concurrent callers -- e.g. `l3io-execute` and `l3io-plan`
     invoked around the same time in one project -- must not both decide the same key has
     not been shown yet and each write their own "now recorded" copy, silently dropping one.
     """
@@ -1754,8 +1806,16 @@ def _exit_code_or_fail(v) -> int:
         return 1
 
 
-def derive_story_sample(node):
+def derive_story_sample(node, blocked_hours: float = 0.0):
     """Compute a story's scope samples and its fix cohort. None when not derivable.
+
+    When `blocked_hours > 0`, `elapsed_hours` is deliberately absent from the
+    returned sample's `scope_ratios`: wall-clock during blocked time includes
+    human wait, and folding that into calibration would poison the scope ratio
+    for future stories. Other metrics are unaffected -- `man_hours`,
+    `hitl_hours` and `tokens_k` are assessed or counted, not measured against
+    a wall-clock, so blocked time does not poison them. Design:
+    docs/superpowers/specs/2026-09-25-story-lifecycle-blocked-design.md §5.
 
     THE SAMPLE MUST BE MEASURED AGAINST THE BASE BAND, NOT AGAINST THE LAST
     ESTIMATE. The estimate is `band_mid x scope_ratio_applied x fix_factor`, so a
@@ -1796,6 +1856,8 @@ def derive_story_sample(node):
 
     ratios = {}
     for metric in CALIBRATED_METRIC_FIELDS:
+        if metric == "elapsed_hours" and blocked_hours and blocked_hours > 0:
+            continue     # excluded per §5: wall-clock includes human wait time
         e_num, a_num = _estimate_metric(est, metric), _actual_metric(act, metric)
         if metric == "tokens_k":
             # Measure SCOPE against the fresh classes only -- on BOTH sides.
@@ -1884,7 +1946,7 @@ def _mark_sampled(node, node_path, y=None, marker=CALIBRATION_MARKER) -> None:
     _atomic_dump(y or _yaml(), node, node_path)
 
 
-def record_story_sample(state_root: str, node, node_path: str = None, y=None) -> str:
+def record_story_sample(state_root: str, node, node_path: str | None = None, y=None) -> str:
     """Derive a story's calibration sample and append it to the shared file.
 
     A write path, unlike load_calibration: migrates a stale schema version
@@ -1896,9 +1958,19 @@ def record_story_sample(state_root: str, node, node_path: str = None, y=None) ->
     prior = _already_sampled(node)
     if prior:
         return f"sample already recorded at {prior} — skipped (replay)"
-    sample = derive_story_sample(node)
+    story_key = str(node.get("key", "") or "").strip()
+    blocked_hours = _total_blocked_hours(state_root, story_key)
+    sample = derive_story_sample(node, blocked_hours=blocked_hours)
     if sample is None:
         return "no sample (missing estimate or actual)"
+    if blocked_hours > 0:
+        # Inline duration lets an operator eyeball whether the exclusion was
+        # warranted -- a 5-minute block resolves quickly; a 6-day block obviously
+        # doesn't -- without cross-referencing the event log. Per §5 of the design.
+        sys.stderr.write(
+            f"pm-status.py: WARN blocked story {story_key} — elapsed_hours "
+            f"sample deferred (event log shows {blocked_hours:.1f}h in blocked); "
+            f"man_hours, hitl_hours, tokens_k still recorded\n")
     from ruamel.yaml.comments import CommentedMap
     with calibration_lock(state_root):
         y_cal, cal = load_calibration(state_root)
@@ -2319,6 +2391,44 @@ def record_orchestration_sample(state_root: str, level: str, epic_key: str,
     return note
 
 
+def actual_event_times(state_root: str) -> dict:
+    """{story key: ts of its latest `actual` event}, from state/events.jsonl.
+
+    The one honest source for "when did this story close". `updated_at` is not:
+    any field write overwrites it, so it dates the last edit rather than the
+    closure. Used by `redrive_story_samples` to rebuild calibration samples in
+    the chronological order the original appends had -- see the refusal there
+    for why an incomplete answer is not usable.
+    """
+    idx: dict = {}
+    p = events_path(state_root)
+    if not os.path.isfile(p):
+        return idx
+    try:
+        with open(p, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue  # a torn or hand-mangled line must not kill the rebuild
+                if not isinstance(ev, dict):
+                    continue
+                if ev.get("event") != "actual" or ev.get("node") != "story":
+                    continue
+                k = ev.get("key")
+                if not k:
+                    continue
+                ts = str(ev.get("ts", ""))
+                if k not in idx or ts >= idx[k]:
+                    idx[k] = ts
+    except OSError as e:
+        raise PMError(2, f"could not read the event log at {p}: {e}") from e
+    return idx
+
+
 def redrive_story_samples(state_root: str) -> dict:
     """Rebuild `scope` and `fix` from the nodes on disk. Returns a report.
 
@@ -2337,20 +2447,20 @@ def redrive_story_samples(state_root: str) -> dict:
 
     Only `scope` and `fix` are rebuilt. `closure`, `orchestration` and `token_mix` derive
     from different inputs and were never affected, so they are left exactly as they are.
+
+    Samples are re-appended in CLOSURE order, taken from each story's `actual` event in
+    state/events.jsonl -- not in the order the tree walk visits them. `weighted_ratio`
+    weights the last entry most, so order is load-bearing, and directory order is not a
+    neutral substitute for it. Raises PMError(2) without writing anything when that order
+    cannot be established for every sampled story.
     """
     from ruamel.yaml.comments import CommentedMap
     report = {"stories": 0, "sampled": 0, "provenance": {}, "skipped": 0}
     with calibration_lock(state_root):
-        y, cal = load_calibration(state_root)
-        backup = calibration_path(state_root) + ".pre-redrive"
-        if os.path.exists(calibration_path(state_root)) and not os.path.exists(backup):
-            import shutil
-            shutil.copy2(calibration_path(state_root), backup)
-            report["backup"] = os.path.basename(backup)
-
-        cal["scope"] = CommentedMap()
-        cal["fix"] = CommentedMap()
-
+        # Pass 1 -- gather, mutating nothing. The refusal below has to be able to
+        # leave the file and the backup untouched, so no write happens until the
+        # ordering is known to be establishable.
+        gathered = []
         for status in STATUS_DIRS:
             base = os.path.join(state_root, status)
             if not os.path.isdir(base):
@@ -2372,37 +2482,98 @@ def redrive_story_samples(state_root: str) -> dict:
                         if sample is None:
                             report["skipped"] += 1
                             continue
-                        cls = sample["classification"]
-                        bucket = cal["scope"].setdefault(cls, CommentedMap())
-                        for metric, ratio in sample["scope_ratios"].items():
-                            entry = bucket.setdefault(metric, CommentedMap())
-                            entry.setdefault("samples", [])
-                            entry["samples"].append(round(ratio, 4))
-                        iters = sample["fix_iterations"]
-                        if iters is not None:
-                            _bump_cohort(cal["fix"].setdefault(cls, CommentedMap()),
-                                         "clean" if iters == 0 else "reworked",
-                                         sample["actual_man_hours"])
-                        report["sampled"] += 1
-                        pv = sample["provenance"]
-                        report["provenance"][pv] = report["provenance"].get(pv, 0) + 1
+                        key = str(node.get("key") or
+                                  os.path.splitext(os.path.basename(sf))[0])
+                        gathered.append((key, sample))
+
+        # Pass 2 -- restore chronological order, or refuse.
+        #
+        # `weighted_ratio` is an exponential-decay mean over samples oldest-first,
+        # so the LAST entry in a list weighs most. The original samples were
+        # appended one per `set-actual`, in closure order, which made that
+        # weighting mean what it says. Rebuilding by walking the tree replaced it
+        # with lexicographic key order -- and because STATUS_DIRS is
+        # ("active", "planned", "archived"), archived epics land LAST and collect
+        # the HIGHEST recency weight. Archived work is the oldest work, so on any
+        # project with an archived epic the weighting was not merely scrambled, it
+        # was cleanly inverted: a repair that changed no data re-priced every
+        # unstarted story, silently, in a command that advertises itself as a
+        # repair. Observed on a real project as a ~16% rise on `complex`.
+        #
+        # Refusing on an incomplete answer rather than falling back to directory
+        # order is deliberate, and follows `adr-reserve`/`AdrHomeUnresolved`: a
+        # confidently wrong result with a success code is worse than no result.
+        # Directory order is not a neutral default -- it is anti-chronological by
+        # construction here -- and `--no-events` means a log can exist and still
+        # not cover every story, which looks orderable and is not.
+        if gathered:
+            times = actual_event_times(state_root)
+            missing = sorted({k for k, _ in gathered if not times.get(k)})
+            if missing:
+                shown = ", ".join(missing[:5]) + ("..." if len(missing) > 5 else "")
+                raise PMError(2,
+                    f"redrive: cannot establish closure order for {len(missing)} of "
+                    f"{len(gathered)} sampled stories -- no `actual` event in "
+                    f"{events_path(state_root)} for: {shown}. Calibration ratios are "
+                    f"recency-weighted, so rebuilding in directory order would invert "
+                    f"the weighting rather than repair it (archived epics sort last "
+                    f"and would weigh most). Nothing written; the calibration file is "
+                    f"unchanged. This is expected on a project predating the event log, "
+                    f"or one whose actuals were written with --no-events.")
+            gathered.sort(key=lambda g: (times[g[0]], g[0]))
+
+        # Pass 3 -- write.
+        y, cal = load_calibration(state_root)
+        backup = calibration_path(state_root) + ".pre-redrive"
+        if os.path.exists(calibration_path(state_root)) and not os.path.exists(backup):
+            import shutil
+            shutil.copy2(calibration_path(state_root), backup)
+            report["backup"] = os.path.basename(backup)
+
+        cal["scope"] = CommentedMap()
+        cal["fix"] = CommentedMap()
+
+        for _key, sample in gathered:
+            cls = sample["classification"]
+            bucket = cal["scope"].setdefault(cls, CommentedMap())
+            for metric, ratio in sample["scope_ratios"].items():
+                entry = bucket.setdefault(metric, CommentedMap())
+                entry.setdefault("samples", [])
+                entry["samples"].append(round(ratio, 4))
+            iters = sample["fix_iterations"]
+            if iters is not None:
+                _bump_cohort(cal["fix"].setdefault(cls, CommentedMap()),
+                             "clean" if iters == 0 else "reworked",
+                             sample["actual_man_hours"])
+            report["sampled"] += 1
+            pv = sample["provenance"]
+            report["provenance"][pv] = report["provenance"].get(pv, 0) + 1
         save_calibration(y, cal, state_root)
     return report
 
 
 def cmd_calibration(args) -> int:
     if getattr(args, "action", "show") == "redrive":
-        rep = redrive_story_samples(args.state_root)
-        if rep.get("backup"):
-            sys.stdout.write(f"backup {rep['backup']}\n")
-        prov = " ".join(f"{k}={v}" for k, v in sorted(rep["provenance"].items()))
-        sys.stdout.write(
-            f"OK calibration redrive — stories seen {rep['stories']}, "
-            f"samples rebuilt {rep['sampled']}, skipped {rep['skipped']}"
-            + (f" [{prov}]" if prov else "") + "\n")
-        sys.stdout.write("scope and fix rebuilt from the nodes; closure, orchestration and "
-                         "token_mix untouched.\n")
-        return 0
+        # Through _run_core: redrive refuses with PMError(2) when it cannot establish
+        # closure order, and main() has no PMError handler of its own -- without this
+        # the refusal would surface as a traceback and exit 1 instead of the documented
+        # exit 2 with its message.
+        def _redrive() -> int:
+            rep = redrive_story_samples(args.state_root)
+            if rep.get("backup"):
+                sys.stdout.write(f"backup {rep['backup']}\n")
+            prov = " ".join(f"{k}={v}" for k, v in sorted(rep["provenance"].items()))
+            sys.stdout.write(
+                f"OK calibration redrive — stories seen {rep['stories']}, "
+                f"samples rebuilt {rep['sampled']}, skipped {rep['skipped']}"
+                + (f" [{prov}]" if prov else "") + "\n")
+            sys.stdout.write("scope and fix rebuilt from the nodes in closure order (from "
+                             "events.jsonl); closure, orchestration and token_mix untouched.\n")
+            sys.stdout.write("Ratios are recency-weighted, so estimates for unstarted stories "
+                             "may move even where no sample changed — re-run estimate-story to "
+                             "see current numbers.\n")
+            return 0
+        return _run_core(_redrive)
     if getattr(args, "action", "show") == "migrate-metrics":
         with calibration_lock(args.state_root):
             y, cal = load_calibration(args.state_root)
@@ -2677,15 +2848,22 @@ def load_adr_register(state_root: str):
     return y, data
 
 
-_ADR_DOC_NAME = re.compile(r"^(\d{4})-.+\.md$")
-_ADR_OLD_HOME_NAME = re.compile(r"^adr-(\d{4})-.+\.md$")
+# The `ADR-` prefix is optional on the one home and case-insensitive on both. The
+# scan's whole reason for existing (see `highest_adr_on_disk`) is the ADR nobody
+# allocated through the register -- a hand-written one -- and hand-written ADRs are
+# commonly named `ADR-NNNN-slug.md`, which matched neither pattern. A real directory
+# holding ADR-0004..ADR-0025 scanned as "highest is 0", exactly as confidently as an
+# empty one, and `adr-reserve` then issued numbers that were already on disk.
+# Widening can only raise the floor the allocator starts from, never lower it.
+_ADR_DOC_NAME = re.compile(r"^(?:[Aa][Dd][Rr]-)?(\d{4})-.+\.md$")
+_ADR_OLD_HOME_NAME = re.compile(r"^[Aa][Dd][Rr]-(\d{4})-.+\.md$")
 
 
 def _git_toplevel(path: str):
     """The git work tree containing `path`, or None (not a repo, or no git on PATH)."""
     try:
         r = subprocess.run(["git", "-C", path, "rev-parse", "--show-toplevel"],
-                           capture_output=True, text=True)
+                           capture_output=True, check=False, text=True)
     except OSError:
         return None
     top = r.stdout.strip()
@@ -2776,8 +2954,7 @@ def cmd_adr_reserve(args) -> int:
             sys.stderr.write(f"pm-status.py: adr-register.yaml has a malformed "
                              f"'next' ({reg.get('next')!r}); resetting to 1\n")
             start = 1
-        if start < 1:
-            start = 1
+        start = max(start, 1)
         # Refuse rather than guess. Every other failure in this function returns 2
         # before a number is printed, and so does this one: a caller capturing stdout
         # cannot tell a guessed 0001 from a scanned one.
@@ -2842,7 +3019,7 @@ def cmd_notice(args) -> int:
             # match.
             try:
                 y, data = _load(path)
-            except Exception:
+            except Exception:  # noqa: BLE001 -- a notice ledger that cannot be read is rebuilt, never fatal
                 y, data = _yaml(), None
             keys = data.get("keys") if isinstance(data, dict) else None
             if not isinstance(keys, list):
@@ -2851,7 +3028,7 @@ def cmd_notice(args) -> int:
                 return 1
             keys.append(key)
             _atomic_dump(y, {"keys": keys}, path)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- recording a notice must never fail the command it advises
         sys.stderr.write(f"notice: could not record the notice at {path}: {e}\n")
         return 2
     return 0
@@ -2897,8 +3074,8 @@ def split_tokens(total: float, mix: dict) -> dict:
     `sum(classes) == total` is an invariant a test can assert and a reader can
     trust.
     """
-    out = {c: int(round(total * float(mix.get(c, 0.0)))) for c in TOKEN_CLASSES}
-    drift = int(round(total)) - sum(out.values())
+    out = {c: round(total * float(mix.get(c, 0.0))) for c in TOKEN_CLASSES}
+    drift = round(total) - sum(out.values())
     if drift:
         biggest = max(TOKEN_CLASSES, key=lambda c: out[c])
         out[biggest] += drift
@@ -2972,7 +3149,7 @@ def compute_story_estimate(state_root, node, cls, model, overrides, confidence=N
             ratio = COLD_START_SCOPE_RATIO
         applied[metric] = round(ratio, 4)
         value = mid * ratio * fix
-        raw[metric] = int(round(value)) if metric == "tokens_k" else round(value, 2)
+        raw[metric] = round(value) if metric == "tokens_k" else round(value, 2)
 
     # The band produces FRESH tokens, matching what the scope ratio now measures.
     # cache_read is then projected from the observed mix rather than banded: it
@@ -2982,7 +3159,7 @@ def compute_story_estimate(state_root, node, cls, model, overrides, confidence=N
     mix = observed_mix(cal)
     fshare = fresh_share(mix)
     counts = split_tokens(fresh_total, {c: mix.get(c, 0.0) / fshare for c in FRESH_TOKEN_CLASSES})
-    counts["cache_read"] = int(round(fresh_total * (mix.get("cache_read", 0.0) / fshare)))
+    counts["cache_read"] = round(fresh_total * (mix.get("cache_read", 0.0) / fshare))
     tokens_est = tokens_block(counts)
     try:
         cost = cost_from_tokens(counts, model, overrides)
@@ -3175,7 +3352,7 @@ def _rollup_parent_estimate(state_root, epic, sprint, model, overrides):
         lo = total * (1 + ratio * COLD_START_CLOSURE_BAND[0] + of * ORCH_SPREAD[0])
         hi = total * (1 + ratio * COLD_START_CLOSURE_BAND[1] + of * ORCH_SPREAD[1])
         if metric == "tokens_k":
-            est[lo_key], est[hi_key] = int(round(lo)), int(round(hi))
+            est[lo_key], est[hi_key] = round(lo), round(hi)
         else:
             est[lo_key], est[hi_key] = round(lo, 2), round(hi, 2)
 
@@ -3333,6 +3510,7 @@ def _has_spend(spend: dict) -> bool:
 
 def rollup_sprint(state_root: str, epic_key: str, sprint_key: str) -> dict:
     by_status, totals, stories = {}, {}, []
+    blocked_details, cumulative_blocks = [], 0
     for p in list_story_files(state_root, epic_key, sprint_key):
         _, node = load_node(p)
         if node is None:
@@ -3340,7 +3518,16 @@ def rollup_sprint(state_root: str, epic_key: str, sprint_key: str) -> dict:
         st = str(node.get("status", "unknown"))
         by_status[st] = by_status.get(st, 0) + 1
         _accumulate_actuals(totals, node)
-        stories.append({"key": node.get("key", os.path.basename(p)), "status": st})
+        row = {"key": node.get("key", os.path.basename(p)), "status": st}
+        if st == "blocked":
+            row["blocked_reason"] = str(node.get("blocked_reason", "") or "")
+            blocked_details.append(
+                {"key": row["key"], "reason": row["blocked_reason"]})
+        # completion_evidence.blocks_seen counts events over the story's whole life,
+        # not current state; a story currently unblocked can still contribute here.
+        ce = node.get("completion_evidence") or {}
+        cumulative_blocks += int(ce.get("blocks_seen", 0) or 0)
+        stories.append(row)
     sp = sprint_file(state_root, epic_key, sprint_key)
     _, snode = load_node(sp) if sp else (None, None)
     return {
@@ -3348,6 +3535,9 @@ def rollup_sprint(state_root: str, epic_key: str, sprint_key: str) -> dict:
         "status": str((snode or {}).get("status", "unknown")),
         "story_count": len(stories),
         "by_status": by_status,
+        "blocked_stories": len(blocked_details),
+        "blocked_details": blocked_details,
+        "blocks_seen_cumulative": cumulative_blocks,
         "actual_totals": totals,
         "node_actual": _block_totals(snode, "actual"),
         "spend": _sprint_spend(totals, snode),
@@ -3358,6 +3548,8 @@ def rollup_sprint(state_root: str, epic_key: str, sprint_key: str) -> dict:
 def rollup_epic(state_root: str, epic_key: str) -> dict:
     by_status, totals, sprints, story_count = {}, {}, [], 0
     spend, sprint_actual_sum = _new_spend(), {}
+    blocked_stories_total, cumulative_blocks_total = 0, 0
+    blocked_details_all = []
     for sd in list_sprint_dirs(state_root, epic_key):
         skey = _sprint_key_from_dir(sd)
         r = rollup_sprint(state_root, epic_key, skey)
@@ -3369,6 +3561,10 @@ def rollup_epic(state_root: str, epic_key: str) -> dict:
             totals[k] = totals.get(k, 0.0) + v
         _merge_spend(spend, r["spend"])
         _add_totals(sprint_actual_sum, r["node_actual"])
+        blocked_stories_total += r.get("blocked_stories", 0)
+        cumulative_blocks_total += r.get("blocks_seen_cumulative", 0)
+        for detail in r.get("blocked_details", []):
+            blocked_details_all.append({**detail, "sprint": r["key"]})
     ep = epic_file(state_root, epic_key)
     _, enode = load_node(ep) if ep else (None, None)
     # The epic's OWN closure residual sits on top of its sprints' — one bucket,
@@ -3382,6 +3578,9 @@ def rollup_epic(state_root: str, epic_key: str) -> dict:
         "sprint_count": len(sprints),
         "story_count": story_count,
         "by_status": by_status,
+        "blocked_stories": blocked_stories_total,
+        "blocked_details": blocked_details_all,
+        "blocks_seen_cumulative": cumulative_blocks_total,
         "actual_totals": totals,
         "node_actual": _block_totals(enode, "actual"),
         "spend": spend,
@@ -3479,13 +3678,16 @@ def _build_sprint_detail(state_root: str, epic_key: str, sprint_key: str,
         by_status[st] = by_status.get(st, 0) + 1
         _accumulate_actuals(totals, node)
         d, ex = dwell_hours(node, events_index, now)
-        stories.append({"key": key, "status": st,
-                        "estimate": dict(node.get("estimate") or {}),
-                        "actual": dict(node.get("actual") or {}),
-                        "updated_at": node.get("updated_at"),
-                        "dwell_hours": None if d is None else round(d, 2),
-                        "dwell_exact": ex,
-                        "flags": compute_flags("story", key, st, d, ex)})
+        story_row = {"key": key, "status": st,
+                     "estimate": dict(node.get("estimate") or {}),
+                     "actual": dict(node.get("actual") or {}),
+                     "updated_at": node.get("updated_at"),
+                     "dwell_hours": None if d is None else round(d, 2),
+                     "dwell_exact": ex,
+                     "flags": compute_flags("story", key, st, d, ex)}
+        if st == "blocked":
+            story_row["blocked_reason"] = str(node.get("blocked_reason", "") or "")
+        stories.append(story_row)
 
     return {"key": sprint_key, "status": s_status, "story_count": len(stories),
             "by_status": by_status, "actual_totals": totals,
@@ -3536,7 +3738,7 @@ def build_epic_detail(state_root: str, epic_key: str, dir_status: str,
         stale = False
         if claimed is not None and ttl:
             try:
-                age_min = ((now or datetime.now(timezone.utc))
+                age_min = ((now or datetime.now(UTC))
                            - claimed).total_seconds() / 60.0
                 stale = age_min > float(ttl)
             except (TypeError, ValueError):
@@ -3701,7 +3903,7 @@ def build_progress_model(state_root: str, plan=None, statuses=None,
 def _bar(done: int, total: int, width: int = 10) -> str:
     if total <= 0:
         return "░" * width
-    filled = int(round(width * max(0, min(done, total)) / total))
+    filled = round(width * max(0, min(done, total)) / total)
     return "█" * filled + "░" * (width - filled)
 
 
@@ -3726,13 +3928,53 @@ def _render_epic_tree(d: dict, out: list, indent: str = "  ") -> None:
                    f"(ttl {d['lock'].get('ttl_minutes')}m)")
     for sp in d["sprints"]:
         s_done = sp["by_status"].get("done", 0)
-        out.append(f"{indent}  {sp['key']:<6} {sp['status']:<12} "
+        # Cosmetic wart from the design (§13): a sprint whose stories are ALL
+        # blocked reads as "actively being worked" when its status is still
+        # in-progress. Surface it in the header, not as a status transition.
+        s_blocked = sp["by_status"].get("blocked", 0)
+        header_status = sp["status"]
+        if s_blocked and s_blocked == sp["story_count"] and sp["story_count"] > 0:
+            header_status = f"{sp['status']} (all {s_blocked} stories blocked)"
+        out.append(f"{indent}  {sp['key']:<6} {header_status:<20} "
                    f"{s_done}/{sp['story_count']}  {_dwell_str(sp)}{_stuck_suffix(sp)}")
         for st in sp["stories"]:
             if st["status"] == "done":
                 continue  # counts above carry finished work; the tree shows what is live
+            suffix = ""
+            if st["status"] == "blocked":
+                reason = st.get("blocked_reason", "")
+                suffix = f"  [blocked: {reason}]" if reason else "  [blocked]"
             out.append(f"{indent}    {st['key']:<20} {st['status']:<14} "
-                       f"{_dwell_str(st)}{_stuck_suffix(st)}")
+                       f"{_dwell_str(st)}{_stuck_suffix(st)}{suffix}")
+
+
+def _blocked_stories_from_model(model: dict) -> list:
+    """Every currently-blocked story in the model, with its reason and location.
+
+    Walks the model's phases + unplanned_epics rather than re-reading the tree
+    from disk. Used by both render_tree and render_md so their "Blocked stories"
+    sections agree on shape and content. The JSON emitter returns the whole
+    model already; callers reading JSON pick the same field paths directly.
+    """
+    out = []
+    for phase in model.get("phases") or []:
+        for d in phase.get("epics_detail") or []:
+            for sp in d.get("sprints") or []:
+                for st in sp.get("stories") or []:
+                    if st.get("status") == "blocked":
+                        out.append({
+                            "epic": d["key"], "sprint": sp["key"],
+                            "story": st["key"],
+                            "reason": st.get("blocked_reason", "")})
+    for d in model.get("unplanned_epics") or []:
+        for sp in d.get("sprints") or []:
+            for st in sp.get("stories") or []:
+                if st.get("status") == "blocked":
+                    out.append({
+                        "epic": d["key"], "sprint": sp["key"],
+                        "story": st["key"],
+                        "reason": st.get("blocked_reason", "")})
+    return out
 
 
 def render_tree(model: dict) -> str:
@@ -3793,6 +4035,15 @@ def render_tree(model: dict) -> str:
             out.append(f"  {bucket:<14} {_fmt_actuals(spend.get(bucket) or {})}")
         out.append(f"  {'TOTAL':<14} {_fmt_actuals(model.get('spend_total') or {})}")
 
+    blocked = _blocked_stories_from_model(model)
+    if blocked:
+        out.append("")
+        out.append(f"Blocked stories ({len(blocked)}):")
+        for b in blocked:
+            where = f"{b['epic']}/{b['sprint']}/"
+            reason = b["reason"] or "(no reason recorded)"
+            out.append(f"  {where}{b['story']:<20}  {reason}")
+
     other = [f for f in model["flags"] if f["kind"] != "stuck"]
     if other:
         out.append("")
@@ -3811,8 +4062,8 @@ def render_tree(model: dict) -> str:
 def render_md(model: dict) -> str:
     plan = model.get("plan")
     out = ["# Progress Report", "",
-           f"Generated by `pm-status.py report` at {model['generated']}. This file is a "
-           "view, not a source of truth — do not hand-edit; regenerate it.", ""]
+           (f"Generated by `pm-status.py report` at {model['generated']}. This file is a "
+           "view, not a source of truth — do not hand-edit; regenerate it."), ""]
     if plan:
         out.append(f"**Plan:** `{plan.get('current_plan')}` — readiness "
                    f"`{plan.get('readiness')}`, generated {plan.get('generated')}")
@@ -3859,13 +4110,22 @@ def render_md(model: dict) -> str:
         out.append(f"| {level} | {body} |")
     out.append("")
 
+    blocked = _blocked_stories_from_model(model)
+    if blocked:
+        out += [f"## Blocked stories ({len(blocked)})", "",
+                "| Story | Epic | Sprint | Reason |", "|---|---|---|---|"]
+        for b in blocked:
+            reason = b["reason"] or "(no reason recorded)"
+            out.append(f"| {b['story']} | {b['epic']} | {b['sprint']} | {reason} |")
+        out.append("")
+
     spend = model.get("spend") or {}
     if _has_spend(spend):
         out += ["## Spend", "",
-                "Actual spend by attribution, over every epic in the tree (not only the "
+                ("Actual spend by attribution, over every epic in the tree (not only the "
                 "epics listed above). `stories` is the sum of the leaf actuals, `closure` "
                 "each level's own closure-phase residual, `orchestration` the separate "
-                "orchestration block.", "",
+                "orchestration block."), "",
                 "| Attribution | " + " | ".join(METRIC_FIELDS) + " |",
                 "|---|" + "---|" * len(METRIC_FIELDS)]
         rows = [(b, spend.get(b) or {}) for b in SPEND_BUCKETS]
@@ -3900,7 +4160,7 @@ def _resolve_story_items(state_root, node, story_key, session) -> None:
             keys = [str(k) for k in raw]
         else:
             sys.stderr.write(f"pm-status.py: warning -- {story_key} has a malformed resolves: "
-                             f"({raw!r}); nothing resolved. Run /l3io-util-doctor triage.\n")
+                             f"({raw!r}); nothing resolved. Run /l3io-doctor triage.\n")
             return
         open_path = issues_paths(state_root)[0]
         with issues_lock(open_path):
@@ -3916,13 +4176,13 @@ def _resolve_story_items(state_root, node, story_key, session) -> None:
                     sys.stdout.write(f"{'ok' if was_resolved else 'resolved'} {msg}\n")
                 except PMError as e:
                     sys.stderr.write(f"pm-status.py: warning -- could not resolve {k} "
-                                     f"for {story_key}: {e.msg} -- run /l3io-util-doctor "
+                                     f"for {story_key}: {e.msg} -- run /l3io-doctor "
                                      f"triage\n")
     except KeyboardInterrupt:
         raise
     except BaseException as e:  # noqa: BLE001 -- deliberate, ADR-0003
         sys.stderr.write(f"pm-status.py: warning -- done hook failed for {story_key}: "
-                         f"{e!r}; the status write stands. Run /l3io-util-doctor triage "
+                         f"{e!r}; the status write stands. Run /l3io-doctor triage "
                          f"(audit-issues finding 1c) to finish it.\n")
 
 
@@ -3932,15 +4192,62 @@ def cmd_set_status(args) -> int:
     if args.status not in valid:
         _die_usage(f"invalid {kind} status '{args.status}' — expected one of {sorted(valid)}")
 
+    # blocked-lifecycle argument guards (story only -- sprint/epic keep no --reason/--resolution).
+    reason = str(getattr(args, "reason", "") or "").strip()
+    resolution = str(getattr(args, "resolution", "") or "").strip()
+    if kind == "story" and args.status == "blocked" and not reason:
+        _die_usage("--status blocked requires --reason \"<why>\" -- a blocked story with no reason "
+                   "on record is what this flag exists to prevent")
+    if kind != "story" and (reason or resolution):
+        _die_usage("--reason and --resolution are story-only flags; sprints and epics compose "
+                   "from their children")
+    if kind == "story" and args.status != "blocked" and reason:
+        _die_usage("--reason is only valid with --status blocked; other transitions have no "
+                   "reason field to record")
+
     # An epic node is written under its epic_node_lock. The event append inside is a leaf
     # lock, and the done hook below (issues_lock) runs only for a story, outside any hold.
     with _epic_write_lock(args, kind):
         y, node, path, label = _load_checked(args.state_root, args, kind)
         prior = str(node.get("status", "")) or None
+
+        # Story transitions are per-pair, not per-target. See VALID_STORY_TRANSITIONS.
+        if kind == "story" and prior is not None:
+            allowed = VALID_STORY_TRANSITIONS.get(prior, set())
+            if args.status not in allowed:
+                _die_usage(
+                    f"invalid story transition {prior!r} -> {args.status!r}; from {prior!r} "
+                    f"allowed: {sorted(allowed) or ['(terminal)']}")
+            # blocked -> done is the one transition that requires --resolution: the story
+            # resolved by the same event that unblocked it (e.g. spec change removed the need).
+            if prior == "blocked" and args.status == "done" and not resolution:
+                _die_usage("blocked -> done requires --resolution \"<why the story is done "
+                           "rather than resumed>\"; use --status in-progress to resume")
+
         node["status"] = args.status
         node["updated_at"] = _now_iso()
         if args.title:
             node["title"] = args.title
+        if kind == "story":
+            leaving_blocked = prior == "blocked" and args.status != "blocked"
+            entering_blocked = args.status == "blocked" and prior != "blocked"
+            if args.status == "blocked":
+                node["blocked_reason"] = reason
+            elif leaving_blocked and "blocked_reason" in node:
+                # Current node reflects only current state; block history lives in the log.
+                del node["blocked_reason"]
+            if entering_blocked:
+                # completion_evidence.blocks_seen: O(1) counter for closure-side
+                # observability. Not used for cohort routing -- see §5 of the design.
+                # Not decremented on exit (this counts events, not current state).
+                from ruamel.yaml.comments import CommentedMap
+                ce = node.get("completion_evidence")
+                if not isinstance(ce, dict):
+                    ce = CommentedMap()
+                    node["completion_evidence"] = ce
+                ce["blocks_seen"] = int(ce.get("blocks_seen", 0) or 0) + 1
+        else:
+            leaving_blocked = entering_blocked = False
         save_node(y, node, path, getattr(args, "flock", False))
 
         if not getattr(args, "no_events", False):
@@ -3949,6 +4256,19 @@ def cmd_set_status(args) -> int:
                        "session": getattr(args, "session_id", None)}
             payload.update(_event_keys(kind, args))
             append_event(args.state_root, payload)
+            if entering_blocked:
+                bp = {"ts": _now_iso(), "event": "block_open",
+                      "story": args.story, "reason": reason,
+                      "session": getattr(args, "session_id", None)}
+                append_event(args.state_root, bp)
+            if leaving_blocked:
+                dur = _block_duration_since_last_open(args.state_root, args.story)
+                bc = {"ts": _now_iso(), "event": "block_close",
+                      "story": args.story, "duration_hours": dur,
+                      "session": getattr(args, "session_id", None)}
+                if args.status == "done":
+                    bc["resolution"] = resolution
+                append_event(args.state_root, bc)
 
     sys.stdout.write(f"OK set-status {label} -> {args.status}\n")
     if kind == "story" and args.status == "done":
@@ -3957,7 +4277,173 @@ def cmd_set_status(args) -> int:
     return 0
 
 
+def _total_blocked_hours(state_root: str, story_key: str) -> float:
+    """Sum `duration_hours` across every closed block for this story SINCE its
+    most recent `dispatch_open`.
+
+    A story with any nonzero blocked time in the current dispatch cycle cannot
+    produce an `elapsed_hours` calibration sample -- wall-clock during blocked
+    time includes human wait, which would poison the scope ratio for future
+    stories. The exclusion is per-metric, not per-sample: other metrics stay
+    recorded.
+
+    Scoping to the most recent dispatch cycle avoids the multi-session
+    over-exclusion the design's §5 amendment named: a story blocked in Session 1
+    and completed cleanly in Session 2 must not get Session 2's `elapsed_hours`
+    excluded because of Session 1's blocks. Index-based (not timestamp-based)
+    boundary because events.jsonl is append-only and its order reflects
+    chronology reliably even under clock skew.
+
+    Fallback: when the story has no `dispatch_open` on record -- either because
+    the log was truncated, or because the story predates dispatch bracketing --
+    the scan reverts to counting all `block_close` events. That preserves the
+    safety-first bias for stories where the dispatch bracket isn't available.
+
+    Returns 0.0 on a missing log, an empty story key, or an unreadable line
+    within the log -- lenient enough that a torn write does not silently fail
+    the calibration write path this feeds.
+    """
+    if not story_key:
+        return 0.0
+    p = events_path(state_root)
+    if not os.path.exists(p):
+        return 0.0
+    try:
+        with open(p, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return 0.0
+    parsed = []      # (line_index, event, story, duration_hours-or-None)
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        story = rec.get("story")
+        if story != story_key:
+            continue
+        ev = rec.get("event")
+        if ev not in ("dispatch_open", "block_close"):
+            continue
+        parsed.append((i, ev, rec.get("duration_hours")))
+    if not parsed:
+        return 0.0
+    # Find the LATEST dispatch_open index for this story; sum block_close
+    # durations after it. If there is no dispatch_open at all, sum everything
+    # (safety-first fallback for stories that predate dispatch bracketing).
+    last_open_idx = -1
+    for i, ev, _ in parsed:
+        if ev == "dispatch_open":
+            last_open_idx = i
+    total = 0.0
+    for i, ev, d in parsed:
+        if ev != "block_close":
+            continue
+        if last_open_idx >= 0 and i < last_open_idx:
+            continue
+        if isinstance(d, (int, float)):
+            total += float(d)
+    return round(total, 3)
+
+
+def _block_duration_since_last_open(state_root: str, story_key: str):
+    """Hours since the most recent block_open event for `story_key`.
+
+    Returns None when no block_open is found on the story (a caller-side bug the WARN
+    downstream can surface without crashing). Reads the events log from the end.
+    """
+    p = events_path(state_root)
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if rec.get("event") == "block_open" and rec.get("story") == story_key:
+            opened = _parse_iso(rec.get("ts"))
+            if opened is None:
+                return None
+            now = _parse_iso(_now_iso())
+            if now is None:
+                return None
+            delta = (now - opened).total_seconds() / 3600.0
+            return round(delta, 3)
+    return None
+
+
+EPIC_KEY_RE = re.compile(r"^E\d{3}$")
+STORY_KEY_RE = re.compile(r"^E\d{3}-S\d{2}-\d{3}$")
+# status-files.md §11: `depends_on` lives on BOTH an epic node (epic keys) and a story node
+# (story keys). Reading only that section's first sentence gives the epic case and silently
+# loses the story case, which is the shape the migration fixtures actually carry.
+DEPENDS_ON_KEY_RE = {"epic": EPIC_KEY_RE, "story": STORY_KEY_RE}
+
+
+def cmd_set_depends_on(args) -> int:
+    """Append epic keys to an epic's `depends_on` list.
+
+    `depends_on` is epic-only and list-shaped (status-files.md §11). `set-field --value` takes a
+    single string, so routing a list through it would store "['E001']" as a scalar -- worse than
+    not writing it at all, because a later reader takes it for one. That is exactly why the
+    migration engine WARNed and skipped this field rather than flattening it.
+
+    All-or-nothing: every key is validated before anything is written, because a half-applied
+    dependency list is a worse artefact than an absent one -- l3io-plan topologically sorts
+    on it, so a missing edge silently reorders a phase.
+    """
+    from ruamel.yaml.comments import CommentedSeq
+    from ruamel.yaml.scalarstring import SingleQuotedScalarString as SQ
+
+    kind = _infer_kind(args)
+    if kind not in DEPENDS_ON_KEY_RE:
+        _die_usage(f"depends_on lives on an epic or a story node, not a {kind} "
+                   f"(status-files.md §11)")
+    key_re = DEPENDS_ON_KEY_RE[kind]
+    self_key = args.epic if kind == "epic" else args.story
+
+    keys = list(args.add or [])
+    if not keys:
+        _die_usage("set-depends-on needs at least one --add KEY")
+    for k in keys:
+        if not key_re.match(k):
+            _die_usage(f"--add {k!r} is not a {kind} key (expected {key_re.pattern}); "
+                       f"nothing written")
+        if k == self_key:
+            _die_usage(f"--add {k!r} is the node itself -- it cannot depend on itself; "
+                       f"nothing written")
+
+    with _epic_write_lock(args, kind):
+        y, node, path, label = _load_checked(args.state_root, args, kind)
+        existing = node.get("depends_on")
+        if not isinstance(existing, list):
+            existing = CommentedSeq()
+            node["depends_on"] = existing
+        added = []
+        for k in keys:
+            if str(k) not in [str(e) for e in existing]:
+                existing.append(SQ(k))
+                added.append(k)
+        node["updated_at"] = _now_iso()
+        save_node(y, node, path, getattr(args, "flock", False))
+
+    sys.stdout.write(f"OK set-depends-on {label} += {added or '(nothing new)'}\n")
+    return 0
+
+
 def cmd_import_node(args) -> int:
+
     """Create a state node from a migration record. The counterpart to set-status for a
     node that does not exist yet.
 
@@ -3981,6 +4467,21 @@ def cmd_import_node(args) -> int:
     if args.status not in valid:
         _die_usage(
             f"invalid {kind} status '{args.status}' -- expected one of {sorted(valid)}")
+
+    # blocked_reason gate: a story imported at `status: blocked` must carry a --reason
+    # the same way set-status does. Migration sources that carry blocked state (bmad-loop
+    # is the shape) preserve the reason on the record; a source that reports blocked but
+    # cannot preserve the reason is a broken source, not an acceptable import shape.
+    # Sprints and epics don't have `blocked` in their status enum, so the guard is
+    # story-only by construction.
+    reason = str(getattr(args, "reason", "") or "").strip()
+    if kind == "story" and args.status == "blocked" and not reason:
+        _die_usage("--status blocked requires --reason \"<why>\" -- a blocked story with no "
+                   "reason on record is what this flag exists to prevent")
+    if kind != "story" and reason:
+        _die_usage("--reason is a story-only flag; sprint/epic status sets have no blocked")
+    if kind == "story" and args.status != "blocked" and reason:
+        _die_usage("--reason is only valid with --status blocked")
 
     with _epic_write_lock(args, kind, require_exists=False):
         path, label = ensure_node_path(args.state_root, args, kind, args.status)
@@ -4010,6 +4511,12 @@ def cmd_import_node(args) -> int:
         if args.origin:
             node["origin"] = args.origin
             node["origin_note"] = args.origin_note or ""
+        if kind == "story" and args.status == "blocked":
+            node["blocked_reason"] = reason
+            # completion_evidence.blocks_seen is a counter of OUR events, not the
+            # source's history -- import-node predates our history for a migrated node,
+            # so the counter starts at 0. A subsequent set-status --status blocked would
+            # bump it. Not adding it here.
 
         save_node(_yaml(), node, path, getattr(args, "flock", False))
 
@@ -4020,6 +4527,15 @@ def cmd_import_node(args) -> int:
             }
             payload.update(_event_keys(kind, args))
             append_event(args.state_root, payload)
+            # For a story imported at blocked, emit a paired block_open so a future
+            # set-status transitioning off blocked can derive duration the same way
+            # a set-status-created block does. Without this, _block_duration_since_
+            # last_open would return None and block_close would land without duration.
+            if kind == "story" and args.status == "blocked":
+                bp = {"ts": _now_iso(), "event": "block_open",
+                      "story": args.story, "reason": reason,
+                      "session": getattr(args, "session_id", None)}
+                append_event(args.state_root, bp)
 
     sys.stdout.write(f"OK import-node {label} -> {args.status}\n")
     return 0
@@ -4067,7 +4583,7 @@ def cmd_sync_story_doc(args) -> int:
                          f"document not updated\n")
         return 0
 
-    with io.open(path, encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         text = fh.read()
     if not text.startswith("---\n"):
         sys.stderr.write(f"WARN {path} has no YAML frontmatter — nothing to update\n")
@@ -4104,7 +4620,7 @@ def cmd_sync_story_doc(args) -> int:
     meta["status"] = args.status
     buf = io.StringIO()
     yaml.dump(meta, buf)
-    with io.open(path, "w", encoding="utf-8") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write("---\n" + buf.getvalue() + "---" + body)
     if not args.quiet:
         sys.stdout.write(f"OK {args.story} document -> {args.status}\n")
@@ -4161,7 +4677,38 @@ def cmd_story_doc_init(args) -> int:
     return _run_core(run)
 
 
+def cmd_import_actual(args) -> int:
+    """set-actual with the migration contract baked into defaults that cannot be overridden.
+
+    A migrated actual needs three things, each easy to forget and dangerous to forget:
+
+      runtime = other   it has no Claude provenance to claim
+      tokens  = N/A     legacy data carries no four-class split, and 0 would be consumed by
+                        calibration as a real measurement, dragging the learned ratio to zero
+      no calibration    a bulk import must not append hundreds of samples in one pass;
+                        `calibration redrive` rebuilds from the nodes afterwards if wanted
+
+    set-actual can express all three -- that is why this verb delegates rather than
+    reimplements, and why set-actual is left exactly as it is. What it cannot do is stop a
+    caller omitting one: forget --tokens-na under runtime=claude and you get a refusal, but
+    forget --no-calibrate and the ratios are quietly poisoned with unmeasured data. This verb
+    removes that choice. --runtime, --tokens-*, --model and --calibrate are not in its surface
+    at all, so a wrong call is a usage error rather than a silent one.
+    """
+    args.runtime = "other"
+    args.tokens_na = True
+    args.no_calibrate = True
+    args.block = "actual"
+    args.model = ""
+    args.token_rates = ""
+    args.cost = None
+    for f in ("tokens_input", "tokens_output", "tokens_cache_write", "tokens_cache_read"):
+        setattr(args, f, None)
+    return cmd_set_actual(args)
+
+
 def cmd_set_actual(args) -> int:
+
     kind = args.node
     block = getattr(args, "block", "actual")
     if block == "orchestration" and kind == "story":
@@ -4451,7 +4998,7 @@ def read_transcript_usage(paths, since=None, until=None) -> dict:
     seen, records, sidechain, outside, undated = set(), 0, 0, 0, 0
     for fp in files:
         try:
-            fh = open(fp, "r", encoding="utf-8")
+            fh = open(fp, "r", encoding="utf-8")  # noqa: SIM115 -- catch OSError on open, then `with fh:` below
         except OSError as e:
             sys.stderr.write(f"pm-status.py: warning — cannot read {fp}: {e}\n")
             continue
@@ -4905,7 +5452,7 @@ def cmd_check_lock(args) -> int:
     if path is None:
         sys.stdout.write("FREE\n")
         return 0
-    y, data = load_node(path)
+    _y, data = load_node(path)
     if data is None or "_lock" not in data:
         sys.stdout.write("FREE\n")
         return 0
@@ -5123,7 +5670,16 @@ _BL_KEY_RE = re.compile(r"^BL-E(\d+)-(\d+)$")
 ISSUES_FILENAME = "issues.yaml"
 RESOLVED_FILENAME = "issues-resolved.yaml"
 OPEN_ISSUE_STATUSES = ("backlog", "scheduled")
-RESOLUTIONS = ("fixed", "wontfix", "duplicate", "obsolete")
+# Statuses the PRE-3.0 schema used for an open item, mapped to their current equivalent.
+# `deferred` was that schema's resting state for a deliberate deferral -- open, unscheduled --
+# which is exactly `backlog` now. A project upgrading with a legacy backlog otherwise gets one
+# undifferentiated 1f per item (453 on a real one) whose repair text is "report only", so
+# triage reports everything and can act on nothing. Mapping to a RESOLVED state instead would
+# be a judgement, not a migration, so it is deliberately not done here.
+LEGACY_OPEN_STATUSES = {"deferred": "backlog"}
+
+
+RESOLUTIONS = ("fixed", "wontfix", "duplicate", "obsolete", "deferred")
 # A backlog item's kind. `defect` is the default and is never written, so every file written
 # before kinds existed still reads as all defects. The spec kinds come from spec-align.py's
 # spec sync (docs/adr/0004-agents-edit-architecture-specs.md): they are confirmed or
@@ -5290,7 +5846,58 @@ def _norm_issue_title(title) -> str:
     return " ".join(str(title).split()).casefold()
 
 
+SOURCE_PHASE_RE = re.compile(r"^[A-Za-z][\w-]*$")
+
+
+def resolve_source(args):
+    """Return (source_string, phase, ref) for an append-issue call.
+
+    `--source` is free text stored verbatim and validated nowhere, and it is the only link an
+    issue has back to the artifact that raised it. A real backlog grew 100+ distinct shapes,
+    and audit-backlog.py accumulated five regexes trying to read them -- every one of which
+    has been wrong about some shape. This package's own step-03-dev-loop.md even emits a
+    source its own primary reader rejects, surviving only because an earlier regex uses
+    .search rather than .match.
+
+    So the structured form DERIVES the string rather than sitting beside it: a caller cannot
+    produce a phase/ref pair that disagrees with the text, because it does not write the text.
+    Validation here guarantees the result parses as `{phase} ({ref})`, which is the invariant
+    the readers depend on.
+
+    `--source` stays accepted and stored byte-for-byte: _content_matches compares it exactly
+    as one of four duplicate-detection keys, deliberately, because over-matching loses a real
+    finding.
+    """
+    raw = getattr(args, "source", None)
+    phase = getattr(args, "source_phase", None)
+    ref = getattr(args, "source_ref", None)
+    note = getattr(args, "source_note", "") or ""
+
+    if raw and phase:
+        _die_usage("--source and --source-phase are alternatives -- pass one, not both")
+    if not raw and not phase:
+        _die_usage("append-issue needs --source, or --source-phase with --source-ref")
+    if note and not phase:
+        _die_usage("--source-note applies only to --source-phase")
+    if raw:
+        return raw, None, None
+
+    if not ref:
+        _die_usage("--source-phase requires --source-ref")
+    if not SOURCE_PHASE_RE.match(phase):
+        _die_usage(f"--source-phase {phase!r} must match {SOURCE_PHASE_RE.pattern} -- the "
+                   f"derived source has to parse as '{{phase}} ({{ref}})', which a space or a "
+                   f"punctuation character breaks")
+    if "(" in ref or ")" in ref:
+        _die_usage(f"--source-ref {ref!r} must not contain parentheses -- they delimit the ref "
+                   f"in the derived source string")
+
+    derived = f"{phase} ({ref})" + (f" — {note}" if note else "")
+    return derived, phase, ref
+
+
 def _content_matches(item, epic_norm: str, sprint_norm: str, source: str, norm_title: str) -> bool:
+
     return (isinstance(item, dict)
             and _norm_num(item.get("epic", ""), 3) == epic_norm
             and _norm_num(item.get("sprint", "") or "", 2) == sprint_norm
@@ -5361,6 +5968,8 @@ def _issues_open_path(args) -> str:
 
 def _append_issue(args) -> int:
     from ruamel.yaml.comments import CommentedMap
+    # Resolved before the lock: a usage error should not hold issues.yaml while it exits.
+    source_str, source_phase, source_ref = resolve_source(args)
     open_path = _issues_open_path(args)
     epic_norm = _norm_num(args.epic, 3)
     sprint_norm = _norm_num(args.sprint, 2) if args.sprint else ""
@@ -5395,7 +6004,7 @@ def _append_issue(args) -> int:
         note = ""
         if not args.allow_duplicate:
             dup = _find_issue_by_content(store.backlog, epic_norm, sprint_norm,
-                                         args.source, norm_title)
+                                         source_str, norm_title)
             if dup is not None:
                 sys.stdout.write(
                     f"OK append-issue skipped -- matches existing {dup.get('key', '')} "
@@ -5403,7 +6012,7 @@ def _append_issue(args) -> int:
                     f"--allow-duplicate to force a second entry.\n")
                 return 0
             prior = _last_resolved_match(store.resolved, epic_norm, sprint_norm,
-                                         args.source, norm_title)
+                                         source_str, norm_title)
             if prior is not None:
                 res, psev = str(prior.get("resolution", "")), str(prior.get("severity", ""))
                 if res == "fixed":
@@ -5426,7 +6035,10 @@ def _append_issue(args) -> int:
         item["epic"] = args.epic
         item["sprint"] = args.sprint if args.sprint else ""
         item["title"] = args.title
-        item["source"] = args.source
+        item["source"] = source_str
+        if source_phase:
+            item["source_phase"] = source_phase
+            item["source_ref"] = source_ref
         item["severity"] = args.severity
         item["status"] = "backlog"
         if kind != "defect":
@@ -5736,7 +6348,7 @@ def _partial_promotion(state_root, keys):
                                  f"it by hand, then rerun")
             return story_key
     raise PMError(2, f"{', '.join(keys)} already claimed by {sorted(claimants)} -- run "
-                     f"/l3io-util-doctor triage (audit-issues 1d/1h)")
+                     f"/l3io-doctor triage (audit-issues 1d/1h)")
 
 
 def _promotable_items(store, keys):
@@ -5757,7 +6369,7 @@ def _promotable_items(store, keys):
         kind = str(item.get("kind") or "defect")
         if kind != "defect":
             raise PMError(2, f"{k} is a {kind} item -- spec items are confirmed or rejected in "
-                             f"/l3io-util-doctor triage, never promoted to a story")
+                             f"/l3io-doctor triage, never promoted to a story")
         items.append(item)
     return items
 
@@ -5946,7 +6558,11 @@ def _audit_findings(state_root, store) -> list:
         except PMError:
             continue            # 1i (reported above): an ambiguous key is never evaluated
         st = str(it.get("status", ""))
-        if st not in OPEN_ISSUE_STATUSES:
+        if st in LEGACY_OPEN_STATUSES:
+            add("1f", k, f"open item has legacy status {st!r} (pre-3.0 resting state)",
+                f"run: pm-status.py repair-issue --state-root S --key {k} "
+                f"--action normalize-status  # -> {LEGACY_OPEN_STATUSES[st]}")
+        elif st not in OPEN_ISSUE_STATUSES:
             add("1f", k, f"open item has status {st!r}", "report only")
         kind = it.get("kind")
         if kind is not None and str(kind) not in ISSUE_KINDS:
@@ -6004,9 +6620,23 @@ def _audit_findings(state_root, store) -> list:
                 # past the key space, which reseed refuses (exit 2), so that alias gets the
                 # same hand-fix repair as its key-space finding below, not a reseed it can't run.
                 advice = by_hand if beyond else "run repair-issue --action reseed"
+                # Name the raw bytes, not just the parsed key. The parsed key can differ
+                # from what is in the file in two ways at once -- an unquoted `019` loads
+                # as `19`, losing both the quoting AND the leading zero -- so an operator
+                # shown only `19` goes looking for a writer that emits integers and finds
+                # none. The usual cause is an external YAML round-trip rather than any
+                # pm-status verb: PyYAML's safe_dump quotes `001`-`007` and `012`, whose
+                # digits resolve as octal, but emits `008`, `009`, `018`, `019` bare
+                # because 8 and 9 are not octal digits -- so a project can round-trip this
+                # file for weeks and only corrupt the epics with an 8 or 9 behind the
+                # leading zero. Cost a consumer project a wrongly-filed defect against
+                # append-issue, which normalises correctly in every spelling.
                 add("1e", f"BL-E{en}", f"next has a non-canonical key {e!r} for epic {en} "
-                                      f"(= {nxt.get(e)!r}); allocate reads only {en!r} -- "
-                                      f"{advice}",
+                                      f"(= {nxt.get(e)!r}); allocate reads only the quoted "
+                                      f"{en!r}. Check the raw bytes -- a bare (unquoted) "
+                                      f"{en} in the file parses as {e!r}, and an external "
+                                      f"YAML round-trip is a likelier cause than any "
+                                      f"pm-status write -- {advice}",
                     hand_fix if beyond else "repair-issue --action reseed", epic=en)
             elif stored is None or stored <= highest:
                 add("1e", f"BL-E{en}", f"next[{e}] = {nxt.get(e)!r} but the highest key is "
@@ -6038,7 +6668,7 @@ def cmd_audit_issues(args) -> int:
     channel, not a new finding id), also exits 4; under
     --format json it still prints a parseable document, {"findings": [], "error": MSG},
     because triage and the health check parse it. Heuristic checks live in
-    l3io-util-doctor/scripts/audit-backlog.py."""
+    l3io-doctor/scripts/audit-backlog.py."""
     findings = []
     open_path, res_path = issues_paths(args.state_root)
     try:
@@ -6072,8 +6702,104 @@ def cmd_repair_issue(args) -> int:
     return _run_core(lambda: _repair_issue(args))
 
 
+def _epic_is_archived(state_root, item) -> bool | None:
+    """True/False for an item's epic, or None when its status cannot be established.
+
+    None matters: an item whose epic has no state node cannot be classified, and guessing
+    either way is the error this whole path exists to avoid.
+    """
+    epic = str(item.get("epic", "")).strip()
+    if not epic:
+        return None
+    d = find_epic_dir(state_root, f"E{_norm_num(epic, 3)}")
+    if d is None:
+        return None
+    return os.path.basename(os.path.dirname(d)) == "archived"
+
+
+def _normalize_one_legacy(store, state_root, item, session, cause):
+    """Apply the epic-aware rule to one legacy-status item. Returns a verb string for the
+    report: 'resolved', 'normalized', or 'skipped'.
+
+    The rule, and why it is not a flat mapping: `deferred` was a DISPOSITION -- "we looked at
+    this and decided not now". `backlog` means open and undecided, and neither open status
+    carries a decision, so mapping every `deferred` to `backlog` erases one.
+
+      behind an OPEN epic      -> backlog. The loss is harmless: the item is open either way.
+      behind an ARCHIVED epic  -> resolved `deferred`. It will not be picked up in that epic,
+                                  and issues-resolved.yaml is where a resolution can actually
+                                  hold the decision.
+      epic status unknown      -> skipped, reported, untouched.
+
+    Measured on the project that found this: 518 of 520 open items sat behind archived epics,
+    and mapping them to `backlog` made 444 undecided findings behind closed epics, reddening
+    that project's guard against exactly that.
+    """
+    was = str(item.get("status", ""))
+    archived = _epic_is_archived(state_root, item)
+    key = str(item.get("key", ""))
+    if archived is None:
+        return "skipped"
+    if archived:
+        resolve_issue_core(store, key, "deferred",
+                           note=f"migrated from the pre-3.0 open status {was!r}; the epic was "
+                                f"already closed, so the deferral is recorded as a resolution "
+                                f"rather than reopened as undecided",
+                           session=session, cause=cause)
+        return "resolved"
+    item["status"] = LEGACY_OPEN_STATUSES[was]
+    _issue_event(store.state_root, "issue_status_normalized", item, session, cause,
+                 note=f"{was} -> {item['status']}")
+    return "normalized"
+
+
+def _normalize_all_legacy(args) -> int:
+    """Normalize every legacy open status in one pass, under one lock.
+
+    Measured on a real upgrade: 452 items. One-at-a-time that is 452 subprocesses, each
+    taking the issues lock, inside a triage step that confirms per item -- reported back as
+    impractical, and it is. Batching adds no judgement: the mapping is mechanical, and the
+    same LEGACY_OPEN_STATUSES membership test gates each item exactly as the single-key path
+    does, so anything unrecognised is left alone rather than swept along.
+    """
+    open_path = issues_paths(args.state_root)[0]
+    with issues_lock(open_path):
+        store = IssueStore(open_path)
+        # Snapshot first: resolve_issue_core mutates the open list, so iterating it live
+        # would skip items.
+        legacy = [it for it in list(store.open.get("backlog") or [])
+                  if isinstance(it, dict) and str(it.get("status", "")) in LEGACY_OPEN_STATUSES]
+        if not legacy:
+            sys.stdout.write("OK normalize-status --all-legacy: no legacy status found\n")
+            return 0
+        tally = {"resolved": 0, "normalized": 0, "skipped": 0}
+        skipped_keys = []
+        for it in legacy:
+            verb = _normalize_one_legacy(store, args.state_root, it,
+                                         args.session_id, args.cause)
+            tally[verb] += 1
+            if verb == "skipped":
+                skipped_keys.append(str(it.get("key", "")))
+        store.save_open()
+    sys.stdout.write(
+        f"OK normalize-status --all-legacy: {tally['normalized']} normalized to backlog "
+        f"(open epic), {tally['resolved']} resolved as deferred (closed epic), "
+        f"{tally['skipped']} skipped\n")
+    if skipped_keys:
+        sys.stdout.write(
+            f"  skipped -- epic status could not be established, left untouched: "
+            f"{', '.join(skipped_keys)}\n")
+    return 0
+
+
 def _repair_issue(args) -> int:
     from ruamel.yaml.comments import CommentedMap
+    if getattr(args, "all_legacy", False):
+        if args.action != "normalize-status":
+            raise PMError(2, "--all-legacy applies only to --action normalize-status")
+        return _normalize_all_legacy(args)
+    if not args.key:
+        raise PMError(2, "--key is required, or --all-legacy with --action normalize-status")
     k = canonical_bl_key(args.key)
     if k is None:
         raise PMError(2, f"--key {args.key!r} is not a backlog key")
@@ -6124,6 +6850,29 @@ def _repair_issue(args) -> int:
             _issue_event(store.state_root, "issue_scheduled", it, args.session_id, args.cause,
                          story=args.story, via="repair-link")
             msg = f"{k} scheduled to {args.story}"
+        elif act == "normalize-status":
+            # Gated like every other action: only a status this schema once used, and only
+            # to its documented equivalent. An unrecognised status has no safe mapping, so
+            # it stays 1f/report-only rather than being guessed into backlog.
+            opens = store.open_items(k)
+            if len(opens) != 1:
+                raise PMError(2, f"normalize-status: {k} does not resolve to one open item")
+            it = opens[0]
+            was = str(it.get("status", ""))
+            if was not in LEGACY_OPEN_STATUSES:
+                raise PMError(2, f"normalize-status: {k} has status {was!r}, which is not a "
+                                 f"known legacy status ({', '.join(sorted(LEGACY_OPEN_STATUSES))})"
+                                 f" -- audit finding 1f does not hold in its legacy form")
+            verb = _normalize_one_legacy(store, args.state_root, it,
+                                         args.session_id, args.cause)
+            store.save_open()
+            if verb == "skipped":
+                msg = (f"{k} left at {was!r} -- its epic has no state node, so whether the "
+                       f"epic is closed cannot be established and the mapping would be a guess")
+            elif verb == "resolved":
+                msg = f"{k} {was} -> resolved as deferred (its epic is closed)"
+            else:
+                msg = f"{k} {was} -> {it['status']} (legacy status normalized)"
         elif act == "reseed":
             if not any(f["id"] == "1e" and (f["epic"] == epic or f["key"] == "next")
                        for f in findings):
@@ -6258,9 +7007,7 @@ def _list_issues(args) -> int:
             return False
         if args.resolution and str(item.get("resolution", "")) != args.resolution:
             return False
-        if getattr(args, "kind", None) and str(item.get("kind") or "defect") != args.kind:
-            return False
-        return True
+        return not (getattr(args, "kind", None) and str(item.get("kind") or "defect") != args.kind)
 
     def as_json(item):
         d = dict(item)
@@ -6345,7 +7092,7 @@ def _move_epic_locked(state_root: str, epic_key: str, to_status: str) -> str:
     try:
         import subprocess
         r = subprocess.run(["git", "mv", src, dest], cwd=state_root,
-                           capture_output=True, text=True)
+                           capture_output=True, check=False, text=True)
         moved = r.returncode == 0
         if not moved:
             reason = (r.stderr.strip() or r.stdout.strip()
@@ -6445,9 +7192,22 @@ def cmd_show(args) -> int:
         if not os.path.isdir(sd):
             _die_notfound(f"epic {args.epic} sprint {args.sprint}")
         r = rollup_sprint(args.state_root, args.epic, args.sprint)
-        sys.stdout.write(f"{args.epic}/{r['key']}  status={r['status']}  stories={r['story_count']}\n")
+        # Cosmetic wart named in the design (§13): a sprint whose stories are
+        # ALL blocked reads as "actively being worked" when its status is
+        # still in-progress. Surface it in the header rather than promote it to
+        # a status transition (that would need its own transition table).
+        header_status = r["status"]
+        n_blocked = r.get("blocked_stories", 0)
+        if n_blocked and n_blocked == r["story_count"] and r["story_count"] > 0:
+            header_status = f"{r['status']} (all {n_blocked} stories blocked)"
+        sys.stdout.write(f"{args.epic}/{r['key']}  status={header_status}  "
+                         f"stories={r['story_count']}\n")
         for s in r["stories"]:
-            sys.stdout.write(f"  {s['key']:<20} {s['status']}\n")
+            suffix = ""
+            if s["status"] == "blocked":
+                reason = s.get("blocked_reason", "")
+                suffix = f"  [blocked: {reason}]" if reason else "  [blocked]"
+            sys.stdout.write(f"  {s['key']:<20} {s['status']}{suffix}\n")
         sys.stdout.write(f"  actuals: {_fmt_actuals(r['actual_totals'])}\n")
         _write_spend(r["spend"])
         return 0
@@ -6458,6 +7218,11 @@ def cmd_show(args) -> int:
     for sp in r["sprints"]:
         sys.stdout.write(f"  {sp['key']:<8} status={sp['status']:<12} stories={sp['story_count']}\n")
     sys.stdout.write(f"  actuals: {_fmt_actuals(r['actual_totals'])}\n")
+    n_blocked = r.get("blocked_stories", 0)
+    if n_blocked > 0:
+        cumul = r.get("blocks_seen_cumulative", 0)
+        cumul_note = f", {cumul} cumulative block events" if cumul else ""
+        sys.stdout.write(f"  blocked_stories: {n_blocked}{cumul_note}\n")
     _write_spend(r["spend"])
     return 0
 
@@ -6481,7 +7246,7 @@ def _write_spend(spend: dict) -> None:
 
 def cmd_report(args) -> int:
     """Plan-aware progress report. Read-only unless --out is given, which is what lets
-    read-only callers (l3io-util-doctor stats) share this exact code path."""
+    read-only callers (l3io-doctor stats) share this exact code path."""
     if not os.path.isdir(args.state_root):
         _die_notfound(f"state root {args.state_root}")
 
@@ -6543,7 +7308,7 @@ def cmd_report(args) -> int:
 def cmd_verify(args) -> int:
     kind = args.scope  # story | sprint | epic
     if kind == "epic":
-        y, node, path, label = _load_checked(args.state_root, args, kind)
+        _y, node, _path, label = _load_checked(args.state_root, args, kind)
         failures: list[str] = []
         for sd in list_sprint_dirs(args.state_root, args.epic):
             skey = _sprint_key_from_dir(sd)
@@ -6567,7 +7332,7 @@ def cmd_verify(args) -> int:
         sys.stdout.write(f"PASS epic {args.epic}\n")
         return 0
 
-    y, node, path, label = _load_checked(args.state_root, args, kind)
+    _y, node, _path, label = _load_checked(args.state_root, args, kind)
 
     problems: list[str] = []
     if node.get("status") != "done":
@@ -6719,6 +7484,14 @@ def build_parser() -> argparse.ArgumentParser:
     node_args(s)
     s.add_argument("--status", required=True)
     s.add_argument("--title")
+    s.add_argument("--reason", default="",
+                   help="required when --status blocked; free-text why the story halted. "
+                        "Rejected on any other status (a --reason for review would only "
+                        "confuse the record).")
+    s.add_argument("--resolution", default="",
+                   help="required when a story transitions blocked -> done; free-text "
+                        "why the story shipped as-is rather than resumed (e.g. \"spec "
+                        "change removed the need for this story\").")
     s.add_argument("--flock", action="store_true", help="acquire exclusive flock before write")
     s.add_argument("--no-events", dest="no_events", action="store_true",
                    help="skip the events.jsonl append for this call")
@@ -6743,6 +7516,17 @@ def build_parser() -> argparse.ArgumentParser:
     di.add_argument("--story", required=True)
     di.set_defaults(func=cmd_story_doc_init)
 
+    sdo = sub.add_parser("set-depends-on",
+                         help="append dependency keys to an epic or story node's depends_on list")
+    sdo.add_argument("--state-root", required=True)
+    sdo.add_argument("--epic")
+    sdo.add_argument("--story", help="a story node's depends_on takes story keys")
+    sdo.add_argument("--sprint")
+    sdo.add_argument("--add", action="append", required=True, metavar="KEY",
+                     help="repeatable; idempotent, order preserved. Epic keys for an epic "
+                          "node, story keys for a story node")
+    sdo.set_defaults(func=cmd_set_depends_on)
+
     imp = sub.add_parser("import-node",
                          help="create a state node from a migration record")
     imp.add_argument("--state-root", required=True)
@@ -6756,6 +7540,11 @@ def build_parser() -> argparse.ArgumentParser:
                      help="mark the node as reconstructed rather than read")
     imp.add_argument("--origin-note", default="",
                      help="why the node was inferred; recorded beside --origin")
+    imp.add_argument("--reason", default="",
+                     help="required when importing a story at --status blocked; "
+                          "recorded on the node as blocked_reason and in the paired "
+                          "block_open event so a future exit-from-blocked can derive "
+                          "duration. Rejected on any other kind or status.")
     imp.add_argument("--no-events", action="store_true")
     imp.add_argument("--session-id")
     imp.set_defaults(func=cmd_import_node)
@@ -6789,6 +7578,22 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--session-id", dest="session_id", default=None,
                    help="recorded in the event payload; null when omitted")
     a.set_defaults(func=cmd_set_actual)
+
+    ia = sub.add_parser("import-actual",
+                        help="record an actual observed elsewhere (migration); runtime=other, "
+                             "tokens=N/A and no calibration sample are FIXED, not optional")
+    ia.add_argument("--state-root", required=True)
+    ia.add_argument("--node", required=True, choices=["story", "sprint", "epic"])
+    ia.add_argument("--story")
+    ia.add_argument("--epic")
+    ia.add_argument("--sprint")
+    ia.add_argument("--elapsed-hours", dest="elapsed_hours")
+    ia.add_argument("--man-hours", dest="man_hours")
+    ia.add_argument("--hitl-hours", dest="hitl_hours")
+    ia.add_argument("--flock", action="store_true")
+    ia.add_argument("--no-events", dest="no_events", action="store_true")
+    ia.add_argument("--session-id", dest="session_id", default=None)
+    ia.set_defaults(func=cmd_import_actual)
 
     v = sub.add_parser("verify", help="read-back gate; nonzero exit on any gap")
     v.add_argument("--state-root", required=True, help="path to {implementation_artifacts}/state")
@@ -6934,7 +7739,15 @@ def build_parser() -> argparse.ArgumentParser:
     ai.add_argument("--epic", required=True, help="zero-padded epic number, e.g. '001'")
     ai.add_argument("--sprint", default="", help="zero-padded sprint number; empty for epic-level")
     ai.add_argument("--title", required=True)
-    ai.add_argument("--source", required=True, help="review phase + finding ID")
+    ai.add_argument("--source", default=None,
+                    help="free-text source, stored verbatim (legacy form; prefer --source-phase)")
+    ai.add_argument("--source-phase", dest="source_phase", default=None,
+                    help="structured source: the phase, e.g. code-review. With --source-ref it "
+                         "DERIVES --source as '{phase} ({ref})', so the two cannot disagree")
+    ai.add_argument("--source-ref", dest="source_ref", default=None,
+                    help="structured source: the finding or story it points at; no parentheses")
+    ai.add_argument("--source-note", dest="source_note", default="",
+                    help="structured source: free text appended after the parens")
     ai.add_argument("--severity", required=True, choices=["Low", "Medium", "High", "Critical"])
     ai.add_argument("--description", default="")
     ai.add_argument("--kind", default="defect", choices=list(ISSUE_KINDS),
@@ -6988,9 +7801,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     rp = sub.add_parser("repair-issue", help="structural repair gated on an audit-issues finding")
     rp.add_argument("--state-root", required=True)
-    rp.add_argument("--key", required=True, help="the item; for reseed, any key of the epic")
-    rp.add_argument("--action", required=True, choices=["unschedule", "link", "reseed", "reopen"])
+    rp.add_argument("--key", default=None,
+                    help="the item; for reseed, any key of the epic; omit with --all-legacy")
+    rp.add_argument("--action", required=True,
+                    choices=["unschedule", "link", "reseed", "reopen", "normalize-status"])
     rp.add_argument("--story", default=None, help="with --action link")
+    rp.add_argument("--all-legacy", dest="all_legacy", action="store_true",
+                    help="with --action normalize-status: every legacy status in one pass")
     rp.add_argument("--session-id", dest="session_id", default=None)
     rp.add_argument("--cause", default="cli", choices=["cli", "triage", "plan-intake"])
     rp.set_defaults(func=cmd_repair_issue)

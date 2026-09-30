@@ -39,7 +39,6 @@ from pathlib import Path
 
 import yaml
 
-
 # BMad central config is resolved by core's resolver over four TOML layers — see
 # references/config-resolution.md. There is no _bmad/config.yaml; reading one silently
 # yielded {} and pinned every path to the default.

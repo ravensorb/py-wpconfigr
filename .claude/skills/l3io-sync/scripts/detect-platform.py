@@ -22,7 +22,7 @@ from pathlib import Path
 
 
 def run(cmd: list[str], cwd: Path) -> tuple[int, str, str]:
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    result = subprocess.run(cmd, capture_output=True, check=False, text=True, cwd=cwd)
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
@@ -83,7 +83,7 @@ def main() -> int:
 
     # Try the origin remote first, then any remote
     for remote_name in ("origin", "upstream"):
-        code, url, err = run(
+        code, url, _err = run(
             ["git", "remote", "get-url", remote_name], cwd=project_root
         )
         if code == 0 and url:

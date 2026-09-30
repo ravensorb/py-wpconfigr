@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["ruamel.yaml>=0.18"]
 # ///
-# pm-status-version: 3.1.3   (machine-readable marker; `self-install` compares this across copies — keep at top)
+# pm-status-version: 3.2.1   (machine-readable marker; `self-install` compares this across copies — keep at top)
 """
 pm-status.py — deterministic, atomic, round-trip-safe writer for the l3io-pm
 sharded state tree, and the reader behind its progress report.
@@ -264,15 +264,15 @@ from __future__ import annotations
 import argparse
 import contextlib
 import glob
+import hashlib
 import io
 import json
 import os
 import re
 import subprocess
 import sys
-import hashlib
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 try:
     from ruamel.yaml import YAML
@@ -283,7 +283,7 @@ except ModuleNotFoundError:  # pragma: no cover - environment guard
     )
     sys.exit(2)
 
-PM_STATUS_VERSION = "3.1.3"  # keep in sync with the top-of-file `# pm-status-version:` marker
+PM_STATUS_VERSION = "3.2.1"  # keep in sync with the top-of-file `# pm-status-version:` marker
 
 VALID_STORY_STATUS = {"backlog", "ready-for-dev", "in-progress", "review", "done", "blocked"}
 VALID_SPRINT_STATUS = {"backlog", "in-progress", "done"}
@@ -339,7 +339,7 @@ def _yaml() -> YAML:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _load(path: str):
@@ -420,7 +420,7 @@ def _lock_rule_present(text: str, pattern: str = _LOCK_IGNORE_LINE) -> bool:
     is a deliberate user choice and is left as written."""
     present = False
     for raw in text.split("\n"):
-        line = raw[:-1] if raw.endswith("\r") else raw
+        line = raw.removesuffix("\r")
         line = line.rstrip(" ")
         if line == pattern:
             present = True
@@ -674,7 +674,7 @@ def save_node(y, node, path: str, use_flock: bool = False) -> None:
     _flock_write_or_plain(use_flock, y, node, path)
 
 
-def check_backrefs(node, epic_key: str, sprint_key: str = None) -> list:
+def check_backrefs(node, epic_key: str, sprint_key: str | None = None) -> list:
     """Compare a node's parent back-references against its resolved location.
 
     An ABSENT back-reference is a failure, not a pass. Sprint and story files are
@@ -913,7 +913,7 @@ def _parse_iso(ts):
     if not ts:
         return None
     try:
-        return datetime.fromisoformat(str(ts).strip().replace("Z", "+00:00"))
+        return datetime.fromisoformat(str(ts).strip())
     except (TypeError, ValueError):
         return None
 
@@ -924,7 +924,7 @@ def _lock_age_minutes(claimed, now=None) -> float:
     Shared by cmd_check_lock and cmd_set_lock so their TTL arithmetic cannot diverge
     into two independently-wrong implementations.
     """
-    return ((now or datetime.now(timezone.utc)) - claimed).total_seconds() / 60.0
+    return ((now or datetime.now(UTC)) - claimed).total_seconds() / 60.0
 
 
 def build_events_index(state_root: str) -> dict:
@@ -1036,7 +1036,7 @@ def open_dispatches(state_root: str, threshold_minutes: float, now=None) -> list
     except OSError as e:
         sys.stderr.write(f"pm-status.py: warning — could not read event log: {e}\n")
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     out = []
     for rec in pending.values():
         opened = _parse_iso(rec.get("ts"))
@@ -1060,7 +1060,7 @@ def dwell_hours(node, events_index: dict, now=None):
     """
     if node is None:
         return None, False
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     status = str(node.get("status", ""))
     key = str(node.get("key", ""))
     ev = (events_index or {}).get(key)
@@ -1172,7 +1172,7 @@ _CAL_LOCK = {"depth": 0, "fh": None}
 
 
 @contextlib.contextmanager
-def _file_lock(lock_path: str, depth_state: dict, state_root: str = None):
+def _file_lock(lock_path: str, depth_state: dict, state_root: str | None = None):
     """Exclusive flock over a read-modify-write cycle, reentrant per process.
 
     Extracted from calibration_lock so the ADR register can hold a lock without a
@@ -1211,7 +1211,7 @@ def _file_lock(lock_path: str, depth_state: dict, state_root: str = None):
         _ensure_lock_ignore(state_root)
     elif any(os.path.isdir(os.path.join(lock_dir, s)) for s in STATUS_DIRS):
         _ensure_lock_ignore(lock_dir)           # a bare --file that does sit in a state root
-    fh = open(lock_path, "w")
+    fh = open(lock_path, "w")  # noqa: SIM115 -- the fd outlives this statement; flock holds it until the finally
     fcntl.flock(fh, fcntl.LOCK_EX)
     depth_state["depth"], depth_state["fh"] = 1, fh
     try:
@@ -1946,7 +1946,7 @@ def _mark_sampled(node, node_path, y=None, marker=CALIBRATION_MARKER) -> None:
     _atomic_dump(y or _yaml(), node, node_path)
 
 
-def record_story_sample(state_root: str, node, node_path: str = None, y=None) -> str:
+def record_story_sample(state_root: str, node, node_path: str | None = None, y=None) -> str:
     """Derive a story's calibration sample and append it to the shared file.
 
     A write path, unlike load_calibration: migrates a stale schema version
@@ -2863,7 +2863,7 @@ def _git_toplevel(path: str):
     """The git work tree containing `path`, or None (not a repo, or no git on PATH)."""
     try:
         r = subprocess.run(["git", "-C", path, "rev-parse", "--show-toplevel"],
-                           capture_output=True, text=True)
+                           capture_output=True, check=False, text=True)
     except OSError:
         return None
     top = r.stdout.strip()
@@ -2954,8 +2954,7 @@ def cmd_adr_reserve(args) -> int:
             sys.stderr.write(f"pm-status.py: adr-register.yaml has a malformed "
                              f"'next' ({reg.get('next')!r}); resetting to 1\n")
             start = 1
-        if start < 1:
-            start = 1
+        start = max(start, 1)
         # Refuse rather than guess. Every other failure in this function returns 2
         # before a number is printed, and so does this one: a caller capturing stdout
         # cannot tell a guessed 0001 from a scanned one.
@@ -3020,7 +3019,7 @@ def cmd_notice(args) -> int:
             # match.
             try:
                 y, data = _load(path)
-            except Exception:
+            except Exception:  # noqa: BLE001 -- a notice ledger that cannot be read is rebuilt, never fatal
                 y, data = _yaml(), None
             keys = data.get("keys") if isinstance(data, dict) else None
             if not isinstance(keys, list):
@@ -3029,7 +3028,7 @@ def cmd_notice(args) -> int:
                 return 1
             keys.append(key)
             _atomic_dump(y, {"keys": keys}, path)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- recording a notice must never fail the command it advises
         sys.stderr.write(f"notice: could not record the notice at {path}: {e}\n")
         return 2
     return 0
@@ -3075,8 +3074,8 @@ def split_tokens(total: float, mix: dict) -> dict:
     `sum(classes) == total` is an invariant a test can assert and a reader can
     trust.
     """
-    out = {c: int(round(total * float(mix.get(c, 0.0)))) for c in TOKEN_CLASSES}
-    drift = int(round(total)) - sum(out.values())
+    out = {c: round(total * float(mix.get(c, 0.0))) for c in TOKEN_CLASSES}
+    drift = round(total) - sum(out.values())
     if drift:
         biggest = max(TOKEN_CLASSES, key=lambda c: out[c])
         out[biggest] += drift
@@ -3150,7 +3149,7 @@ def compute_story_estimate(state_root, node, cls, model, overrides, confidence=N
             ratio = COLD_START_SCOPE_RATIO
         applied[metric] = round(ratio, 4)
         value = mid * ratio * fix
-        raw[metric] = int(round(value)) if metric == "tokens_k" else round(value, 2)
+        raw[metric] = round(value) if metric == "tokens_k" else round(value, 2)
 
     # The band produces FRESH tokens, matching what the scope ratio now measures.
     # cache_read is then projected from the observed mix rather than banded: it
@@ -3160,7 +3159,7 @@ def compute_story_estimate(state_root, node, cls, model, overrides, confidence=N
     mix = observed_mix(cal)
     fshare = fresh_share(mix)
     counts = split_tokens(fresh_total, {c: mix.get(c, 0.0) / fshare for c in FRESH_TOKEN_CLASSES})
-    counts["cache_read"] = int(round(fresh_total * (mix.get("cache_read", 0.0) / fshare)))
+    counts["cache_read"] = round(fresh_total * (mix.get("cache_read", 0.0) / fshare))
     tokens_est = tokens_block(counts)
     try:
         cost = cost_from_tokens(counts, model, overrides)
@@ -3353,7 +3352,7 @@ def _rollup_parent_estimate(state_root, epic, sprint, model, overrides):
         lo = total * (1 + ratio * COLD_START_CLOSURE_BAND[0] + of * ORCH_SPREAD[0])
         hi = total * (1 + ratio * COLD_START_CLOSURE_BAND[1] + of * ORCH_SPREAD[1])
         if metric == "tokens_k":
-            est[lo_key], est[hi_key] = int(round(lo)), int(round(hi))
+            est[lo_key], est[hi_key] = round(lo), round(hi)
         else:
             est[lo_key], est[hi_key] = round(lo, 2), round(hi, 2)
 
@@ -3739,7 +3738,7 @@ def build_epic_detail(state_root: str, epic_key: str, dir_status: str,
         stale = False
         if claimed is not None and ttl:
             try:
-                age_min = ((now or datetime.now(timezone.utc))
+                age_min = ((now or datetime.now(UTC))
                            - claimed).total_seconds() / 60.0
                 stale = age_min > float(ttl)
             except (TypeError, ValueError):
@@ -3904,7 +3903,7 @@ def build_progress_model(state_root: str, plan=None, statuses=None,
 def _bar(done: int, total: int, width: int = 10) -> str:
     if total <= 0:
         return "░" * width
-    filled = int(round(width * max(0, min(done, total)) / total))
+    filled = round(width * max(0, min(done, total)) / total)
     return "█" * filled + "░" * (width - filled)
 
 
@@ -4063,8 +4062,8 @@ def render_tree(model: dict) -> str:
 def render_md(model: dict) -> str:
     plan = model.get("plan")
     out = ["# Progress Report", "",
-           f"Generated by `pm-status.py report` at {model['generated']}. This file is a "
-           "view, not a source of truth — do not hand-edit; regenerate it.", ""]
+           (f"Generated by `pm-status.py report` at {model['generated']}. This file is a "
+           "view, not a source of truth — do not hand-edit; regenerate it."), ""]
     if plan:
         out.append(f"**Plan:** `{plan.get('current_plan')}` — readiness "
                    f"`{plan.get('readiness')}`, generated {plan.get('generated')}")
@@ -4123,10 +4122,10 @@ def render_md(model: dict) -> str:
     spend = model.get("spend") or {}
     if _has_spend(spend):
         out += ["## Spend", "",
-                "Actual spend by attribution, over every epic in the tree (not only the "
+                ("Actual spend by attribution, over every epic in the tree (not only the "
                 "epics listed above). `stories` is the sum of the leaf actuals, `closure` "
                 "each level's own closure-phase residual, `orchestration` the separate "
-                "orchestration block.", "",
+                "orchestration block."), "",
                 "| Attribution | " + " | ".join(METRIC_FIELDS) + " |",
                 "|---|" + "---|" * len(METRIC_FIELDS)]
         rows = [(b, spend.get(b) or {}) for b in SPEND_BUCKETS]
@@ -4584,7 +4583,7 @@ def cmd_sync_story_doc(args) -> int:
                          f"document not updated\n")
         return 0
 
-    with io.open(path, encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         text = fh.read()
     if not text.startswith("---\n"):
         sys.stderr.write(f"WARN {path} has no YAML frontmatter — nothing to update\n")
@@ -4621,7 +4620,7 @@ def cmd_sync_story_doc(args) -> int:
     meta["status"] = args.status
     buf = io.StringIO()
     yaml.dump(meta, buf)
-    with io.open(path, "w", encoding="utf-8") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write("---\n" + buf.getvalue() + "---" + body)
     if not args.quiet:
         sys.stdout.write(f"OK {args.story} document -> {args.status}\n")
@@ -4999,7 +4998,7 @@ def read_transcript_usage(paths, since=None, until=None) -> dict:
     seen, records, sidechain, outside, undated = set(), 0, 0, 0, 0
     for fp in files:
         try:
-            fh = open(fp, "r", encoding="utf-8")
+            fh = open(fp, "r", encoding="utf-8")  # noqa: SIM115 -- catch OSError on open, then `with fh:` below
         except OSError as e:
             sys.stderr.write(f"pm-status.py: warning — cannot read {fp}: {e}\n")
             continue
@@ -5453,7 +5452,7 @@ def cmd_check_lock(args) -> int:
     if path is None:
         sys.stdout.write("FREE\n")
         return 0
-    y, data = load_node(path)
+    _y, data = load_node(path)
     if data is None or "_lock" not in data:
         sys.stdout.write("FREE\n")
         return 0
@@ -7008,9 +7007,7 @@ def _list_issues(args) -> int:
             return False
         if args.resolution and str(item.get("resolution", "")) != args.resolution:
             return False
-        if getattr(args, "kind", None) and str(item.get("kind") or "defect") != args.kind:
-            return False
-        return True
+        return not (getattr(args, "kind", None) and str(item.get("kind") or "defect") != args.kind)
 
     def as_json(item):
         d = dict(item)
@@ -7095,7 +7092,7 @@ def _move_epic_locked(state_root: str, epic_key: str, to_status: str) -> str:
     try:
         import subprocess
         r = subprocess.run(["git", "mv", src, dest], cwd=state_root,
-                           capture_output=True, text=True)
+                           capture_output=True, check=False, text=True)
         moved = r.returncode == 0
         if not moved:
             reason = (r.stderr.strip() or r.stdout.strip()
@@ -7311,7 +7308,7 @@ def cmd_report(args) -> int:
 def cmd_verify(args) -> int:
     kind = args.scope  # story | sprint | epic
     if kind == "epic":
-        y, node, path, label = _load_checked(args.state_root, args, kind)
+        _y, node, _path, label = _load_checked(args.state_root, args, kind)
         failures: list[str] = []
         for sd in list_sprint_dirs(args.state_root, args.epic):
             skey = _sprint_key_from_dir(sd)
@@ -7335,7 +7332,7 @@ def cmd_verify(args) -> int:
         sys.stdout.write(f"PASS epic {args.epic}\n")
         return 0
 
-    y, node, path, label = _load_checked(args.state_root, args, kind)
+    _y, node, _path, label = _load_checked(args.state_root, args, kind)
 
     problems: list[str] = []
     if node.get("status") != "done":

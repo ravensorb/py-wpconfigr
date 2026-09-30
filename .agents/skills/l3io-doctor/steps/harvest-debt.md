@@ -54,6 +54,39 @@ Append `--exclude-dir={dir}` for each directory listed in `harvest_exclude_dirs`
 Artifact directories are excluded — markers are a **source-code** convention, not an artifact one,
 and a marker quoted inside a backlog description must never re-harvest itself.
 
+**Then drop every hit whose path falls inside this skill's own installed payload** — the
+directory this step file was loaded from, and any sibling mirror of it (a BMad install writes
+both `.claude/skills/l3io-doctor/` and `.agents/skills/l3io-doctor/`). A hit in
+`…/skills/l3io-doctor/steps/harvest-debt.md` is one of this file's own three syntax examples,
+never project debt.
+
+This is a **post-sweep filter, not an `--exclude-dir`, and the distinction is load-bearing.**
+Excluding `.claude` and `.agents` wholesale is one line shorter and wrong: projects keep real
+hooks and tooling scripts under `.claude/`, and a marker in one of those is exactly the debt
+this mode exists to surface. Blinding the sweep to a whole directory trades a visible false
+positive for a silent false negative, which is the worse failure for a tool whose entire job is
+noticing what would otherwise be forgotten. Mangling the examples so they stop matching is worse
+still — they sit in `python`/`go`/`sql` fences precisely so they can be copied, and a copied
+marker that the sweep cannot find is that same silent false negative, relocated into user code.
+The examples stay verbatim; the sweep stays broad; only this file's own payload is filtered.
+
+Narrowing the exclusion to a *path* instead (`--exclude-dir=./.claude/skills/l3io-doctor`) does
+not rescue the `--exclude-dir` form either: GNU grep matches `--exclude-dir` against the
+directory **basename**, so a path-shaped value is **silently a no-op** — no error, no warning,
+both the example and any real marker come back. Verified against GNU grep 3.12. The trap is that
+some drop-in replacements (ugrep, for one) *do* honour the path form, so whoever re-litigates
+this may test it on a machine whose `grep` is not GNU grep, see it work, and revert. Resolving
+the filter at parse time sidesteps that whole portability surface rather than depending on it.
+
+Without this filter the mode finds its own examples in every project that installs the skill —
+three markers × two install mirrors = six phantom hits on a tree with no real debt. Dedupe does
+not absorb them: H3 matches on `source: code-marker ({file}:{line})` against items already in the
+backlog, and an example nobody harvested matches nothing, so it is classified `new` and offered
+for filing. Reported 2026-09-29 as a Health Check defect, but the sweep is shared — Health
+Check's Check 6 delegates to this contract, so it faithfully reported this mode's wrong number.
+Fixing it here fixes both; fixing it in Check 6 alone would have left `/l3io-doctor
+harvest-debt` still offering to write the examples into the backlog.
+
 ### Steps
 
 **Step H1 — Load config and resolve the backlog file**

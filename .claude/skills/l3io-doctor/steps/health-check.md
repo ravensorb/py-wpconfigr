@@ -6,7 +6,7 @@ The default mode — runs when no recognized keyword is passed, or when `check`/
 
 Load config same as described above under On Activation.
 
-### Step HC2 — Scan (19 checks, read-only)
+### Step HC2 — Scan (25 checks, read-only)
 
 Run all checks. They change no project files, with one exception: a check that runs
 `pm-status.py` (Check 13) takes its locks when an issue file exists, and taking a lock may
@@ -154,7 +154,14 @@ uv run {pm_status} list-epics --state-root {pm_state_root} --format json
 uv run {pm_status} list-stories --state-root {pm_state_root} --epic E{nnn}
 # → for each sprint S{nn} the epic actually has (walk the returned keys):
 state_keys=$(uv run {pm_status} list-stories --state-root {pm_state_root} --epic E{nnn} --sprint S{nn})
-artifact_keys=$(ls {implementation_artifacts}/epic-{nnn}/sprint-{nn}/stories/*.md 2>/dev/null | xargs -n1 basename | sed 's/.md//' | sort)
+# Extract the canonical story-key prefix. Slug-in-filename (`E032-S01-001-centralized-file-config.md`)
+# is a common human-readable convention; the state key stays canonical, the filename is UX.
+# `sed 's/.md//'` alone would leave the slug attached and diff every slug-suffixed artifact as
+# an orphan against its own state entry — 400+ false positives on a real project.
+artifact_keys=$(ls {implementation_artifacts}/epic-{nnn}/sprint-{nn}/stories/*.md 2>/dev/null \
+  | xargs -n1 basename \
+  | sed -E 's/^(E[0-9]{3}-S[0-9]{2}-[0-9]{3})(-[^.]+)?\.md$/\1/' \
+  | sort -u)
 diff <(printf '%s\n' "$state_keys") <(printf '%s\n' "$artifact_keys")
 ```
 
@@ -341,7 +348,7 @@ dependency that vanished under a project surfaces otherwise as a silently skippe
 mid-epic — the failure `bmad-deps.py` exists to make visible, and nothing was calling it.
 
 ```bash
-uv run {skill-root}/scripts/bmad-deps.py --project-root {project-root} --format json; echo "exit=$?"
+uv run {skill-root}/scripts/bmad-deps.py verify --project-root {project-root} --format json; echo "exit=$?"
 ```
 
 - exit 3 → flag · Priority: **Critical** · name every unresolved **required** dependency. A

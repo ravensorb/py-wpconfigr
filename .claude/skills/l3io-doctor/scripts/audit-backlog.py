@@ -84,7 +84,7 @@ def rank(item) -> int:
 
 def load_items(pm_status, state_root):
     proc = subprocess.run([sys.executable, pm_status, "list-issues", "--state-root", state_root,
-                           "--all", "--format", "json"], capture_output=True, text=True)
+                           "--all", "--format", "json"], capture_output=True, check=False, text=True)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or f"list-issues exited {proc.returncode}")
     data = json.loads(proc.stdout)
