@@ -1,0 +1,9 @@
+{
+  "ref": "refs/tags/v1.0.0",
+  "ref_type": "tag",
+  "repository": {
+    "full_name": "ravensorb/py-wpconfigr",
+    "name": "py-wpconfigr",
+    "owner": { "login": "ravensorb" }
+  }
+}

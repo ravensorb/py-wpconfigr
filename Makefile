@@ -48,7 +48,7 @@ UV := uv
 ACT_BARE_SECRETS := $(shell grep -hE '^-s [A-Za-z_][A-Za-z0-9_]*$$' $(HOME)/.actrc 2>/dev/null | awk '{print $$2}' | grep -v '^GITHUB_TOKEN$$')
 ACT := env $(foreach s,$(ACT_BARE_SECRETS),$(s)=unused-by-this-repo) act
 
-.PHONY: help act-init lint format types test contracts namespace-check check ci ci-job ci-dryrun ci-list build verify-wheel clean
+.PHONY: help act-init lint format types test contracts namespace-check check ci ci-job ci-dryrun ci-dryrun-one ci-list build verify-wheel clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -102,11 +102,76 @@ ci-job: act-init ## Replay one job: make ci-job JOB=contracts
 	@test -n "$(JOB)" || { echo "usage: make ci-job JOB=<job-id>"; exit 2; }
 	$(ACT) push -j $(JOB)
 
-ci-dryrun: act-init ## Parse and plan the workflow without executing it
-	$(ACT) push --dryrun
-
 ci-list: act-init ## List the jobs act can see
 	$(ACT) push --list
+
+# ---------------------------------------------------------------------------
+# Validating the workflows act CANNOT execute
+#
+# `make ci` runs ci.yml for real. publish.yml and release.yml are deliberately
+# outside it -- act has no OIDC and ignores job.permissions, so running them
+# locally would be misleading at best, and release.yml CREATES TAGS and dispatches
+# publishes, which must never happen from a laptop.
+#
+# A dry run is the middle ground and it is worth more than it looks. act resolves
+# every `uses:` ref against the remote before deciding to skip the step, so a
+# dryrun fails on an action version that does not exist -- it is what catches
+# `changelog-parser@v3.0.14`, a real version of a DIFFERENT action, which no
+# amount of YAML validation would have found. It also catches expression syntax
+# errors, unknown contexts and missing `needs`.
+#
+# --dryrun IS LOAD-BEARING, not a nicety. Without it this target cuts real tags
+# and fires real publishes. A contract test asserts every workflow named here is
+# run with it, so removing it fails `make check` rather than surprising someone.
+# ---------------------------------------------------------------------------
+
+ACT_DRYRUN_FLAGS ?= --var-file .act.vars --concurrent-jobs 1 --dryrun
+
+# The legs live in .github/act-dryrun-legs.json, not here, because a pytest
+# contract asserts they reach every job in every workflow -- and it can only do
+# that if both read the same declaration. Hand-listing them in the recipe would
+# put the rule and its check in two places, which is how they drift.
+#
+# ci.yml is NOT dry-run: `make ci` runs it for real, and act SEGFAULTS dry-running
+# it (nil pointer in containerReference.GetHealth) because it declares MySQL
+# service containers that a dry run never starts. An act limitation, not a defect
+# in the workflow.
+ACT_DRYRUN_LEGS := .github/act-dryrun-legs.json
+
+ci-dryrun: ## Dry-run the workflows `make ci` cannot run, resolving every action ref
+	@set -eu; \
+	test -f $(ACT_DRYRUN_LEGS) || { echo "missing $(ACT_DRYRUN_LEGS)"; exit 1; }; \
+	legs=$$(python3 -c "import json;[print(l['workflow'],l['event'],l.get('eventpath','-'),','.join(f'{k}={v}' for k,v in (l.get('inputs') or {}).items()) or '-') for l in json.load(open('$(ACT_DRYRUN_LEGS)'))['legs']]"); \
+	test -n "$$legs" || { echo "no legs declared -- this gate would pass vacuously"; exit 1; }; \
+	rc=0; n=0; \
+	echo "$$legs" | while read -r wf ev epath inputs; do \
+	  args=""; \
+	  [ "$$epath" = "-" ] || args="$$args -e $$epath"; \
+	  if [ "$$inputs" != "-" ]; then \
+	    for kv in $$(echo "$$inputs" | tr ',' ' '); do args="$$args --input $$kv"; done; \
+	  fi; \
+	  printf '%-13s %-18s %-26s ' "$$wf" "$$ev" "$$inputs"; \
+	  if $(ACT_RUNNER) $(ACT) $(ACT_DRYRUN_FLAGS) -W ".github/workflows/$$wf" $$ev $$args \
+	       >$(CURDIR)/.act-dryrun.log 2>&1; then echo "ok"; else \
+	    echo "FAILED"; \
+	    grep -iE "couldn.t find remote ref|failed to fetch|^Error:|invalid|unable to" $(CURDIR)/.act-dryrun.log \
+	      | head -3 | sed 's/^/                                                       /'; \
+	    echo fail >> $(CURDIR)/.act-dryrun.rc; \
+	  fi; \
+	  rm -f $(CURDIR)/.act-dryrun.log; \
+	done; \
+	if [ -f $(CURDIR)/.act-dryrun.rc ]; then rm -f $(CURDIR)/.act-dryrun.rc; \
+	  echo "one or more legs failed"; exit 1; \
+	else echo "all legs dry-run clean; every action ref resolved"; fi
+
+ci-dryrun-one: ## Dry-run one workflow: make ci-dryrun-one WF=release.yml
+	@test -n "$(WF)" || { echo "set WF, e.g. make ci-dryrun-one WF=release.yml"; exit 1; }
+	@case "$(WF)" in \
+	  release.yml) ev="workflow_dispatch --input bump=patch" ;; \
+	  publish.yml) ev="workflow_dispatch --input target=mirror" ;; \
+	  *)           ev="push" ;; \
+	esac; \
+	$(ACT_RUNNER) $(ACT) $(ACT_DRYRUN_FLAGS) -W .github/workflows/$(WF) $$ev
 
 clean: ## Remove build and cache artifacts
 	rm -rf dist build .artifacts .uv-cache .pytest_cache .mypy_cache .ruff_cache

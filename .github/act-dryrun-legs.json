@@ -1,0 +1,64 @@
+{
+  "_comment": "Which (workflow, event) pairs `make ci-dryrun` exercises. A dry run only resolves `uses:` refs for jobs the event actually REACHES -- a job skipped by its `if:` has its action refs never checked. publish.yml under workflow_dispatch skips the release job entirely, which is where a bad ref hid. So the legs exist to reach every job, and tests/test_workflow_actions.py asserts they do.",
+  "legs": [
+    {
+      "workflow": "release.yml",
+      "event": "workflow_dispatch",
+      "inputs": {
+        "bump": "patch"
+      }
+    },
+    {
+      "workflow": "release.yml",
+      "event": "workflow_dispatch",
+      "inputs": {
+        "bump": "minor"
+      }
+    },
+    {
+      "workflow": "release.yml",
+      "event": "workflow_dispatch",
+      "inputs": {
+        "bump": "major"
+      }
+    },
+    {
+      "workflow": "release.yml",
+      "event": "workflow_dispatch",
+      "inputs": {
+        "bump": "dev"
+      }
+    },
+    {
+      "workflow": "publish.yml",
+      "event": "push",
+      "eventpath": ".github/act-events/tag-push.json"
+    },
+    {
+      "workflow": "publish.yml",
+      "event": "release",
+      "eventpath": ".github/act-events/release-published.json"
+    },
+    {
+      "workflow": "publish.yml",
+      "event": "workflow_dispatch",
+      "inputs": {
+        "target": "mirror"
+      }
+    },
+    {
+      "workflow": "publish.yml",
+      "event": "workflow_dispatch",
+      "inputs": {
+        "target": "testpypi"
+      }
+    },
+    {
+      "workflow": "publish.yml",
+      "event": "workflow_dispatch",
+      "inputs": {
+        "target": "pypi"
+      }
+    }
+  ]
+}
