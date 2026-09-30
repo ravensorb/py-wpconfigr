@@ -5,6 +5,21 @@
   "defaultCategory": "## Other Changes",
   "_comment_commit_template": "Subject line only. Commit bodies in this repo run to dozens of lines each, so including one would turn every release note into a transcript.",
   "commit_template": "- #{{TITLE}}",
+  "_comment_ignore": "Merge commits carry no information a reader wants in a release note, and this history has them. ignore_rules DROPS a matching entry entirely -- the one place dropping is correct, because a merge is not a change.",
+  "ignore_rules": [
+    {
+      "pattern": "^Merge branch ",
+      "on_property": "title"
+    },
+    {
+      "pattern": "^Merge pull request ",
+      "on_property": "title"
+    },
+    {
+      "pattern": "^Merge remote-tracking ",
+      "on_property": "title"
+    }
+  ],
   "_comment_categories": "Keyed on Conventional Commits prefixes. This repo's history does NOT use them yet, so entries currently land under Other Changes -- which is correct behaviour, not a failure, and is why defaultCategory above is load-bearing today rather than a fallback.",
   "categories": [
     {

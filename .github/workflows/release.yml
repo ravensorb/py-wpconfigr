@@ -1,8 +1,8 @@
 # Cutting a release: the one button.
 #
-#   gh workflow run release.yml -f bump=patch     ->  v1.0.0 -> v1.0.1
-#   gh workflow run release.yml -f bump=minor     ->  v1.0.0 -> v1.1.0
-#   gh workflow run release.yml -f bump=major     ->  v1.0.0 -> v2.0.0
+#   gh workflow run release.yml -f bump=patch     ->  v0.0.1 -> v0.0.2
+#   gh workflow run release.yml -f bump=minor     ->  v0.0.1 -> v0.1.0
+#   gh workflow run release.yml -f bump=major     ->  v0.0.1 -> v1.0.0
 #   gh workflow run release.yml -f bump=dev       ->  publishes 1.0.1.devN, no tag
 #
 # This file only ever CREATES A TAG. Everything after that -- build, smoke,
@@ -91,18 +91,19 @@ jobs:
         run: |
           set -euo pipefail
 
-          # No release tag yet: this is the first one. Stated explicitly rather
-          # than incrementing from an assumed 0.0.0, so the first release is a
-          # deliberate number and not an artefact of the arithmetic.
+          # No release tag yet: this is the first one. 0.0.1 is a deliberate
+          # choice, not an artefact of the arithmetic -- the family restarts its
+          # versioning here, below 1.0.0, because nothing has been published under
+          # these distribution names and a 0.x line says so.
           if [ "${HAS_TAG}" != "true" ]; then
-            echo "::notice::no v*.*.* tag exists yet; the first release is v1.0.0"
-            echo "version=1.0.0" >> "$GITHUB_OUTPUT"
+            echo "::notice::no v*.*.* tag exists yet; the first release is v0.0.1"
+            echo "version=0.0.1" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           # The parse must have succeeded. Without this the components below are
           # empty strings, the arithmetic yields 1 or 0, and a bad tag silently
-          # becomes v1.0.0 -- overwriting the real release line.
+          # becomes v0.0.1 -- overwriting the real release line.
           if [ "${IS_VALID}" != "true" ]; then
             echo "::error::could not parse ${LATEST} as semver"
             exit 1
