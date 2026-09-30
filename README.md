@@ -115,40 +115,14 @@ original author's maintained package, use `wpconfigger`.** This fork exists
 because this project needed to change the parser and did not want to depend on
 a package with a single maintainer.
 
-## Changelog
+## Releases
 
-### v1.5.0
+Release notes are built from the commit log at release time and published on the
+[GitHub releases page](https://github.com/ravensorb/py-wpconfigr/releases) — there
+is no changelog file to keep in sync, and this section deliberately does not
+duplicate one.
 
-- Renamed to `l3io-wp-config`, importing as `l3io.wp.config`.
-- `get()` now preserves the PHP literal's type. Previously every numeric-looking
-  value, **including quoted ones**, came back as `float` — so an all-digit
-  password read back as a number.
-- `get()` returns `MISSING` rather than `None` for an absent key, so a falsy
-  value is distinguishable from a missing one.
-- `set()` behaves identically whether the key exists or not. It previously
-  raised `TypeError` for a non-string value only when the key already existed.
-- Adding a constant inserts after the first `<?php` tag only. It previously
-  inserted at every occurrence.
-- The CLI distinguishes a falsy value from an absent key in both output and exit
-  code. It previously printed nothing and exited `0` for both.
-- `$table_prefix` and other simple file-scope variables can be read and written.
-- Every write is verified by reading it back; a failure leaves the file unchanged.
-- Errors are package-owned types under `WpConfigError`.
-- Packaging moved to `pyproject.toml` with `uv`; Python 3.11+; zero runtime
-  dependencies.
-
-### v1.4 - 2018-12-06
-
-- Fixed bug where commented properties were read and updated.
-
-### v1.3 - 2018-12-02
-
-- Added `--set-true` and `--set-false` command-line flags.
-
-### v1.2 - 2018-12-02
-
-- No longer re-writes the configuration file if nothing has changed.
-
-### v1.1 - 2018-12-02
-
-- Added logging.
+Versions before `0.0.1` belong to the upstream fork this package was rewritten
+from, plus a `1.5.0` that was tagged and then fully withdrawn when the family
+restarted its versioning; `docs/version-restart-notes.md` records why it resolves
+nowhere.

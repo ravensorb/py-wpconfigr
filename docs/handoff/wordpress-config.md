@@ -26,8 +26,10 @@ Work arrived as a handoff, not as l3io-pm epics — so this repo has no stories,
   ruff and `mypy --strict` clean.
 - [done] GitHub Actions CI with full nektos/act parity — every job replays locally, nothing
   gated off.
-- [done] `v1.5.0` tagged (tag object `269bf35` dereferences to commit `87c7a66`) with a
-  GitHub Release carrying the wheel and sdist.
+- [done] **`v0.0.1` released** — tag, GitHub Release with wheel and sdist, and
+  `l3io-wp-config 0.0.1` in the Gitea registry. PyPI untouched and still opt-in.
+  A `v1.5.0` was tagged and fully withdrawn first; `docs/version-restart-notes.md`
+  records why, and the version floor that assumed it is gone.
 - [done] Published to the internal Gitea registry; re-publishing an existing version is a
   verified no-op rather than a 409.
 - [done] Handoff 01's "Done when" audited item by item.
@@ -120,8 +122,10 @@ A handoff is read as settled fact, so the distinction is drawn explicitly.
 
 ## Cross-repo state
 
-- `l3io-wp-database` consumes this package and is pinned to `tag = "v1.5.0"`; its config
-  adapter is written and green.
+- `l3io-wp-database` consumes this package. Its pin is **stale**: `tag = "v1.5.0"`
+  no longer exists and its two `l3io-wp-config>=1.5.0` constraints cannot be met by
+  `0.0.1`. It needs repointing to `tag = "v0.0.1"` with the constraints relaxed —
+  that session has been told, and the work is theirs.
 - **AD-15 is not satisfied.** Tagged, released and mirrored is *not* resolvable from PyPI: a
   GitHub Release is not an index, and a limited-visibility mirror is not one a stranger can
   reach. If a dependent reaches PyPI while this package does not, installing it fails

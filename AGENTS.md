@@ -26,9 +26,11 @@ stop.
   the records up. `[project].dependencies` must stay empty. (AD-2, AD-10)
 - Never publish to PyPI. Finish with a verified artifact and hand back; a human
   releases.
-- Version must be **1.5.0 or higher**. PyPI burns filenames permanently, so the
-  fork's 1.4 can never be re-uploaded. `publish.yml`'s version-gate enforces this
-  and also fails when the tag and `pyproject.toml` disagree.
+- **The git tag is the version** (AD-30). There is no literal in this repo to drift
+  from it, and there is no version floor — the old 1.5.0 floor guarded a premise
+  about the `wpconfigr` distribution that ADR-0012 superseded. What `publish.yml`
+  does enforce is that a tagged publish ships a **final** version, never a
+  `.devN` build.
 - Do not widen the parser beyond `define()` and simple file-scope variable
   assignments, and do not add a runtime dependency for any reason.
 - Keep `Copyright (c) 2018 Cariad Eccleston` in `LICENSE` — MIT requires it — and keep
