@@ -103,6 +103,21 @@ stop.
   tuning, not a skipped step. If a difference is genuinely unavoidable, express it
   through `vars.LOCAL_ACT` and never `env.ACT`: `env.ACT` does not work in a
   job-level `if:`, and Gitea runners also set `ACT=true`.
+- **A tag created by a workflow fires no push event, so `release.yml` must dispatch
+  `publish.yml` itself.** GitHub does not trigger workflows from a ref created with
+  `GITHUB_TOKEN`. Without the dispatch the tag sits unpublished while `release.yml`
+  reports success. Confirmed twice: `py-wordpress-database`'s `v0.0.1` was created by
+  the tag action and produced zero Publish runs, and this repo's `v0.0.2` has exactly
+  one Publish run, on `workflow_dispatch`. The `push`-event Publish runs on `v0.0.0`
+  and `v0.0.1` came from tags pushed by hand from a terminal — that is why those
+  fired, and why the absence of the dispatch is easy to miss.
+- **Do not enable `git-action-tag-floating-version` here.** Floating *minor* tags have
+  the shape `vX.Y`, which is exactly the shape of the abandoned upstream tags this
+  repo still carries on its remote — `v0.3`, `v1.0`, `v1.2`, `v1.3`, `v1.4`. At
+  `0.0.x` the floating tags are `v0`/`v0.0` and collide with nothing, so the hazard is
+  latent: the first `1.x` release would silently repoint a 2018 tag.
+  `py-wordpress-backup` has floating tags and no legacy `v*` tags, which is why it is
+  safe there and not here.
 - `publish.yml` is a separate file and act must never run it; `.actrc` pins act to
   `ci.yml`. act has no OIDC and ignores `job.permissions`, so an `if:` guard would
   not protect it.
@@ -123,6 +138,13 @@ stop.
   registry they belong to. What works here is basic auth with the username
   plus `GITEA_TOKEN` as the password. Note Infisical carries no `GITEA_USERNAME`;
   `~/.actrc` declares it literally.
+- **Infisical needs `--env=prod` explicitly.** `infisical secrets get GITEA_TOKEN
+  --plain` returns an empty string with exit 0 — not an error — so a script that
+  trusts it silently authenticates with nothing and the 401 looks like a bad
+  token. `--env=dev` is also empty. Only `--env=prod` returns a value.
+- **The Gitea MCP tools are not authenticated for the package registry.**
+  `package_read` returns 401 against this host. Read the index with `curl -u` using
+  `GITEA_USERNAME` from `~/.actrc` and `GITEA_TOKEN` from Infisical.
 - A stale credential presents as a workflow bug, so test it against
   `/api/v1/user` before debugging the YAML.
 - Reading the index: the **root** `.../pypi/simple/` is **404** — Gitea serves no
