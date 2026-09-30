@@ -1,11 +1,10 @@
-# Changelog
+# The version restart, and what the 1.0.0 line contains
 
-Entries follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), because
-`release.yml` extracts the entry for the version being released and **fails the
-release when there is none** (AD-30). Add the entry before cutting the tag, not
-after — nothing writes this file for you. The tooling only ever reads it: the
-pre-tag gate in `release.yml`, the release notes in `publish.yml`, and `make
-release status`.
+Release notes are built from commit messages by
+`git-action-release-changelog-builder`, so this file is **not** a changelog and
+nothing reads it. It is kept for the withdrawal narrative below, which explains
+why a `1.5.0` exists in this repository's history and resolves nowhere -- a fact
+no commit subject records.
 
 **On the version restart.** A `1.5.0` was tagged on 2026-09-26, mirrored to the
 internal registry, and then fully withdrawn — tag deleted, registry entry
@@ -15,9 +14,7 @@ everything that work contained, reconstructed from git history rather than
 written contemporaneously: treat it as a summary of the commit range, not as a
 record kept at the time.
 
-## [Unreleased]
-
-## [1.0.0] - 2026-09-29
+## What the 1.0.0 line contains
 
 First release of the rewritten package.
 

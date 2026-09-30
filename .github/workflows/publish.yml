@@ -387,26 +387,24 @@ jobs:
       - uses: actions/download-artifact@v8
         with: { name: dist, path: dist }
 
-      - name: the version without its v prefix
-        id: version
-        run: |
-          set -euo pipefail
-          echo "number=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: read this version's entry from the changelog
-        # Makes "update the changelog before releasing" a gate rather than a
-        # habit: validation-level=error fails when CHANGELOG.md has no entry for
-        # the tag. release.yml checks the same thing BEFORE creating the tag, so
-        # normally this never fires -- it is the backstop for a hand-pushed tag.
+      - name: build the release notes from the commit log
+        # Notes come from commit messages, not a hand-maintained file: one source
+        # rather than two that drift. COMMIT mode because this repo's history is
+        # direct commits to main -- PR mode, the action's default, returns nothing.
         #
-        # Written to a file rather than an output because the entry contains
-        # backticks, pipes and quotes that a YAML expression mangles.
-        uses: LiquidLogicLabs/git-action-changelog-parser@v2
+        # `configuration` is a path READ FROM THE WORKING TREE, which is why this
+        # job checks out. A release job that only downloads the artifact has no
+        # working tree, so the config is silently absent and the builder falls back
+        # to defaults with no error.
+        id: notes
+        uses: LiquidLogicLabs/git-action-release-changelog-builder@v3
         with:
-          path: CHANGELOG.md
-          version: ${{ steps.version.outputs.number }}
-          validation-level: error
-          output-file: .release-notes.md
+          platform: github
+          token: ${{ secrets.GITHUB_TOKEN }}
+          mode: COMMIT
+          to-tag: ${{ github.ref_name }}
+          configuration: .github/changelog-config.json
+          fail-on-error: 'false'
 
       - uses: LiquidLogicLabs/git-action-release@v2
         with:
@@ -414,9 +412,10 @@ jobs:
           name: ${{ github.ref_name }}
           artifacts: dist/*
           token: ${{ secrets.GITHUB_TOKEN }}
-          # The hand-written entry, not generated notes: the changelog records
-          # why a behaviour changed, which a commit list cannot reconstruct.
-          body-file: .release-notes.md
+          body: ${{ steps.notes.outputs.changelog }}
+          # The fallback: if the build returns nothing, the platform generator runs
+          # instead, so a release is never published bodyless.
+          generate-release-notes: ${{ steps.notes.outputs.changelog == '' }}
 
   publish-mirror:
     # Optional internal Gitea package registry. Token auth, because a Gitea

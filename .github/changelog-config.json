@@ -1,0 +1,93 @@
+{
+  "_comment_template": "#{{UNCATEGORIZED}} is present so uncategorised entries render HERE rather than being appended after everything else. It is placement, not safety: this action appends them under defaultCategory by default, so nothing is lost either way. The upstream mikepenz action DROPS them without the placeholder -- that difference is why this is spelled out.",
+  "template": "#{{CHANGELOG}}\n#{{UNCATEGORIZED}}",
+  "_comment_default": "defaultCategory MUST NOT be set to an empty string. That is the one setting that silently discards an entry matching no category, which for a release note is the worst available outcome.",
+  "defaultCategory": "## Other Changes",
+  "_comment_commit_template": "Subject line only. Commit bodies in this repo run to dozens of lines each, so including one would turn every release note into a transcript.",
+  "commit_template": "- #{{TITLE}}",
+  "_comment_categories": "Keyed on Conventional Commits prefixes. This repo's history does NOT use them yet, so entries currently land under Other Changes -- which is correct behaviour, not a failure, and is why defaultCategory above is load-bearing today rather than a fallback.",
+  "categories": [
+    {
+      "title": "## Features",
+      "labels": [
+        "feat"
+      ],
+      "rules": [
+        {
+          "pattern": "^feat(\\(.+\\))?!?:",
+          "on_property": "title",
+          "flags": "i"
+        }
+      ]
+    },
+    {
+      "title": "## Fixes",
+      "labels": [
+        "fix"
+      ],
+      "rules": [
+        {
+          "pattern": "^fix(\\(.+\\))?!?:",
+          "on_property": "title",
+          "flags": "i"
+        }
+      ]
+    },
+    {
+      "title": "## Build and CI",
+      "labels": [
+        "build",
+        "ci"
+      ],
+      "rules": [
+        {
+          "pattern": "^(build|ci)(\\(.+\\))?!?:",
+          "on_property": "title",
+          "flags": "i"
+        }
+      ]
+    },
+    {
+      "title": "## Documentation",
+      "labels": [
+        "docs"
+      ],
+      "rules": [
+        {
+          "pattern": "^docs(\\(.+\\))?!?:",
+          "on_property": "title",
+          "flags": "i"
+        }
+      ]
+    },
+    {
+      "title": "## Tests",
+      "labels": [
+        "test"
+      ],
+      "rules": [
+        {
+          "pattern": "^test(\\(.+\\))?!?:",
+          "on_property": "title",
+          "flags": "i"
+        }
+      ]
+    },
+    {
+      "title": "## Maintenance",
+      "labels": [
+        "chore",
+        "refactor",
+        "perf",
+        "style"
+      ],
+      "rules": [
+        {
+          "pattern": "^(chore|refactor|perf|style)(\\(.+\\))?!?:",
+          "on_property": "title",
+          "flags": "i"
+        }
+      ]
+    }
+  ]
+}
