@@ -28,8 +28,9 @@ Work arrived as a handoff, not as l3io-pm epics — so this repo has no stories,
   gated off.
 - [done] **`v0.0.1` released** — tag, GitHub Release with wheel and sdist, and
   `l3io-wp-config 0.0.1` in the Gitea registry. PyPI untouched and still opt-in.
-  A `v1.5.0` was tagged and fully withdrawn first; `docs/version-restart-notes.md`
-  records why, and the version floor that assumed it is gone.
+  An earlier tag was cut and then fully withdrawn — tag, registry entry and release
+  all deleted — when the family restarted its versioning, and the version floor that
+  assumed it is gone. The release line starts at `0.0.1`.
 - [done] Published to the internal Gitea registry; re-publishing an existing version is a
   verified no-op rather than a 409.
 - [done] Handoff 01's "Done when" audited item by item.
@@ -122,8 +123,8 @@ A handoff is read as settled fact, so the distinction is drawn explicitly.
 
 ## Cross-repo state
 
-- `l3io-wp-database` consumes this package. Its pin is **stale**: `tag = "v1.5.0"`
-  no longer exists and its two `l3io-wp-config>=1.5.0` constraints cannot be met by
+- `l3io-wp-database` consumes this package, and its pin is **stale**: it names a
+  tag that no longer exists, and its two version constraints cannot be met by
   `0.0.1`. It needs repointing to `tag = "v0.0.1"` with the constraints relaxed —
   that session has been told, and the work is theirs.
 - **AD-15 is not satisfied.** Tagged, released and mirrored is *not* resolvable from PyPI: a

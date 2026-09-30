@@ -71,11 +71,11 @@ source = "vcs"
 [tool.hatch.version.raw-options]
 # PyPI rejects local version labels, so a dev build must not carry +g<sha>.
 local_scheme = "no-local-version"
-# Three-component tags only. This repo carries v0.3, v1.0, v1.2, v1.3 and v1.4
-# alongside v1.5.0; setuptools-scm reads a two-component tag's components and
-# guesses the next MINOR, so a branch descending from v1.4 would build as
-# 1.5.devN -- which sorts BELOW the released 1.5.0 while claiming to be newer
-# work. With the match, only v1.5.0 and later are candidates.
+# Three-component tags only. This repo still carries the fork's two-component
+# tags (v0.3, v1.0, v1.2, v1.3, v1.4). setuptools-scm reads a two-component tag's
+# components and guesses the next MINOR, so a branch descending from one of those
+# would build a version that sorts BELOW a real release while claiming to be newer
+# work. With the match, only three-component tags are candidates.
 git_describe_command = "git describe --dirty --tags --long --match v[0-9]*.[0-9]*.[0-9]*"
 
 [tool.hatch.build.targets.wheel]

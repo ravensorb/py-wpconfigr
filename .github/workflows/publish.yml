@@ -18,7 +18,14 @@ name: Publish
 
 on:
   push:
-    tags: ['v*']
+    # v0.0.0 is a BASELINE, not a release: it exists so setuptools-scm has a
+    # three-component ancestor (bounding release notes, and making an untagged
+    # build derive 0.0.1.devN rather than 0.1.devN, which would sort ABOVE 0.0.1).
+    # Excluded explicitly because pushing it DID trigger this workflow, and it was
+    # stopped only by the version-gate that existed at the commit it points at --
+    # a tag runs the workflows AS OF ITS OWN COMMIT, not as of main. That is luck,
+    # not a guard, so here is the guard.
+    tags: ['v*', '!v0.0.0']
   # A release cut from an EXISTING tag fires no `push: tags` event, so without this
   # "create a release" would silently not mirror. Duplicate fires are safe: the mirror
   # is idempotent (see publish-mirror's pre-check).
@@ -97,12 +104,12 @@ jobs:
           version-regex: '^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$'
 
       - name: the tag version parsed
-        # There is no version floor. The old one refused anything below 1.5.0 on the
-        # grounds that PyPI burned 1.4 -- true of the `wpconfigr` distribution, which
-        # ADR-0002 planned to reclaim and ADR-0012 superseded. This publishes as
-        # `l3io-wp-config`, which has never been published (PyPI 404), so no version
-        # is spent for this name and the floor was guarding a premise that no longer
-        # holds.
+        # There is no version floor. An earlier one refused releases below a
+        # hard-coded minimum, on the grounds that PyPI had burned a filename of the
+        # predecessor distribution -- the one ADR-0002 planned to reclaim and ADR-0012
+        # superseded. This publishes as `l3io-wp-config`, which has never been
+        # published, so no version is spent for this name and that floor was guarding
+        # a premise that no longer holds.
         #
         # Checked against the TAG, not pyproject. The tag is now the version
         # (AD-30), pyproject carries no literal, and the previous spelling --
@@ -196,10 +203,10 @@ jobs:
           PY
 
       - name: a tagged publish must not ship a dev version
-        # This replaces a 1.5.0 floor whose premise is gone (see version-gate). The
-        # floor was also catching something real BY SIDE EFFECT: a dev build derives
-        # 0.1.devN, whose release tuple (0, 1) fell below it, so deleting the floor
-        # outright would let a dev build publish as a release.
+        # This replaces the removed version floor (see version-gate). That floor was
+        # also catching something real BY SIDE EFFECT: a dev build derives a version
+        # whose release tuple fell below its minimum, so deleting it outright would
+        # have let a dev build publish as a release.
         #
         # Conditioned on a tag, because a dev build reaching the internal mirror is
         # deliberate -- `make release dev` exists to do exactly that, with no tag and
@@ -448,7 +455,7 @@ jobs:
       # Re-publishing a version that is already in the registry must be a NO-OP, not a
       # failure: publish-mirror runs on every tag, so a re-tag or a re-run of an existing
       # release would otherwise fail the whole workflow on a 409 "package file already
-      # exists". That happened on the v1.5.0 tag, whose artifacts were already mirrored.
+      # exists". That happened on an earlier tag whose artifacts were already mirrored.
       #
       # `uv publish --check-url` does NOT solve it here — verified: the check URL is the
       # authenticated simple index, the check does not receive the publish credentials, and

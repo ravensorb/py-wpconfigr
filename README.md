@@ -123,6 +123,4 @@ is no changelog file to keep in sync, and this section deliberately does not
 duplicate one.
 
 Versions before `0.0.1` belong to the upstream fork this package was rewritten
-from, plus a `1.5.0` that was tagged and then fully withdrawn when the family
-restarted its versioning; `docs/version-restart-notes.md` records why it resolves
-nowhere.
+from. This package's own release line starts at `0.0.1`.
