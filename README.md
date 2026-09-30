@@ -1,4 +1,4 @@
-# l3io-wp-config
+# l3io-wordpress-config
 
 Read and write `define()` constants and `$variable` assignments in a WordPress
 `wp-config.php` file.
@@ -44,7 +44,7 @@ raises `ReadBackError` and **the original file is left untouched**.
 ## Install
 
 ```shell
-pip install l3io-wp-config
+pip install l3io-wordpress-config
 ```
 
 Requires Python 3.11 or newer. It has **no runtime dependencies**, permanently.
@@ -79,8 +79,8 @@ Every failure is a package-owned exception under `WpConfigError`; no `OSError`,
 ## Command line
 
 ```shell
-l3io-wp-config --filename /www/wp-config.php --key DB_NAME --value my_blog
-l3io-wp-config --filename /www/wp-config.php --key DB_NAME
+l3io-wordpress-config --filename /www/wp-config.php --key DB_NAME --value my_blog
+l3io-wordpress-config --filename /www/wp-config.php --key DB_NAME
 ```
 
 Also runnable as `python -m l3io.wp.config`. Exit codes are part of the

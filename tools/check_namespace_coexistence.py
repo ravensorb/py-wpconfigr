@@ -34,7 +34,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "l3io-wp-database"
+name = "l3io-wordpress-database"
 version = "0.0.0"
 description = "Stub sibling. Exists only to prove AD-27; never published."
 requires-python = ">=3.11"

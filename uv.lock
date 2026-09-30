@@ -208,7 +208,7 @@ wheels = [
 ]
 
 [[package]]
-name = "l3io-wp-config"
+name = "l3io-wordpress-config"
 source = { editable = "." }
 
 [package.dev-dependencies]

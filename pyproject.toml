@@ -3,7 +3,7 @@ requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "l3io-wp-config"
+name = "l3io-wordpress-config"
 dynamic = ["version"]
 description = "Read and write define() constants in a WordPress wp-config.php file."
 readme = "README.md"
@@ -31,7 +31,7 @@ classifiers = [
 dependencies = []
 
 [project.scripts]
-l3io-wp-config = "l3io.wp.config.cli.main:main"
+l3io-wordpress-config = "l3io.wp.config.cli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/ravensorb/py-wpconfigr"
@@ -99,7 +99,7 @@ python_version = "3.11"
 files = ["src", "tests", "tools"]
 # AD-27: l3io.wp is a PEP 420 native namespace. mypy cannot infer the package root
 # without these and will instead SUGGEST adding an __init__.py -- which would make
-# this a regular package and render l3io-wp-database and l3io-wp-backup unimportable.
+# this a regular package and render l3io-wordpress-database and l3io-wordpress-backup unimportable.
 # Never take that suggestion.
 mypy_path = "src"
 namespace_packages = true

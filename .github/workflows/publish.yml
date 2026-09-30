@@ -1,4 +1,4 @@
-# l3io-wp-config publish.
+# l3io-wordpress-config publish.
 #
 # DELIBERATELY A SEPARATE FILE FROM ci.yml, AND act MUST NEVER RUN IT.
 # act has no OIDC and ignores `job.permissions` entirely, so an `if:` guard
@@ -6,11 +6,11 @@
 # File separation is the only reliable boundary. The repo .actrc points act at
 # ci.yml; keep it that way.
 #
-# Release ORDER across the three packages is manual: l3io-wp-config, then
-# l3io-wp-database, then l3io-wp-backup. This package is FIRST — nothing else
+# Release ORDER across the three packages is manual: l3io-wordpress-config, then
+# l3io-wordpress-database, then l3io-wordpress-backup. This package is FIRST — nothing else
 # can publish until it resolves from the index.
 #
-# There is no version floor: this publishes as `l3io-wp-config`, a name that has
+# There is no version floor: this publishes as `l3io-wordpress-config`, a name that has
 # never been published, so no version is spent for it. The tag is the version
 # (AD-30), and a tagged publish must ship a final version rather than a dev build.
 
@@ -107,7 +107,7 @@ jobs:
         # There is no version floor. An earlier one refused releases below a
         # hard-coded minimum, on the grounds that PyPI had burned a filename of the
         # predecessor distribution -- the one ADR-0002 planned to reclaim and ADR-0012
-        # superseded. This publishes as `l3io-wp-config`, which has never been
+        # superseded. This publishes as `l3io-wordpress-config`, which has never been
         # published, so no version is spent for this name and that floor was guarding
         # a premise that no longer holds.
         #
@@ -192,11 +192,11 @@ jobs:
           from importlib.metadata import version
           from l3io.wp import config
           attr = config.__version__
-          dist = version("l3io-wp-config")
+          dist = version("l3io-wordpress-config")
           if attr != dist:
               raise SystemExit(
                   f"version drift: l3io.wp.config.__version__ is {attr!r} "
-                  f"but the l3io-wp-config distribution reports {dist!r}"
+                  f"but the l3io-wordpress-config distribution reports {dist!r}"
               )
           print("import ok", sorted(config.__all__))
           print(f"one version: {attr}")
@@ -217,7 +217,7 @@ jobs:
           wheel=$(find dist -maxdepth 1 -name '*.whl')
           built=$(uv run --isolated --no-project --python "${{ matrix.python }}" \
                     --with "$wheel" \
-                    python -c "from importlib.metadata import version; print(version('l3io-wp-config'))")
+                    python -c "from importlib.metadata import version; print(version('l3io-wordpress-config'))")
           python3 - "$built" <<'PY'
           import sys
           from packaging.version import Version
@@ -238,7 +238,7 @@ jobs:
           wheel=$(find dist -maxdepth 1 -name '*.whl')
           built=$(uv run --isolated --no-project --python "${{ matrix.python }}" \
                     --with "$wheel" \
-                    python -c "from importlib.metadata import version; print(version('l3io-wp-config'))")
+                    python -c "from importlib.metadata import version; print(version('l3io-wordpress-config'))")
           tagged="${GITHUB_REF_NAME#v}"
           if [ "$built" != "$tagged" ]; then
             echo "::error::tag $tagged does not match the built version $built"
@@ -253,7 +253,7 @@ jobs:
     #
     # The sibling repositories run a three-way coexistence check that installs
     # all three wheels into one interpreter. This package CANNOT: it is first in
-    # the release order, so l3io-wp-database and l3io-wp-backup are not on the
+    # the release order, so l3io-wordpress-database and l3io-wordpress-backup are not on the
     # index yet and `--with` would fail on resolution, not on the invariant.
     # What is checkable here is that THIS distribution ships no marker, which is
     # this package's entire contribution to the invariant. The cross-package
@@ -342,7 +342,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
     environment:
       name: testpypi
-      url: https://test.pypi.org/p/l3io-wp-config
+      url: https://test.pypi.org/p/l3io-wordpress-config
     permissions:
       id-token: write
     steps:
@@ -363,7 +363,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'pypi' 
     environment:
       name: pypi
-      url: https://pypi.org/p/l3io-wp-config
+      url: https://pypi.org/p/l3io-wordpress-config
     permissions:
       id-token: write   # trusted publishing — no long-lived token
     steps:
@@ -387,8 +387,8 @@ jobs:
     # job would fire and try to create the very release that triggered it.
     if: >-
       always() &&
-      github.event_name == 'push' &&
       startsWith(github.ref, 'refs/tags/v') &&
+      github.event_name != 'release' &&
       needs.smoke.result == 'success' &&
       needs.namespace.result == 'success' &&
       needs.publish-pypi.result != 'failure' &&
@@ -427,6 +427,9 @@ jobs:
           artifacts: dist/*
           token: ${{ secrets.GITHUB_TOKEN }}
           body: ${{ steps.notes.outputs.changelog }}
+          # Re-dispatchable now, so a second run must not fail on an existing
+          # release. Idempotent rather than overwriting.
+          skip-if-release-exists: 'true'
           # The fallback: if the build returns nothing, the platform generator runs
           # instead, so a release is never published bodyless.
           generate-release-notes: ${{ steps.notes.outputs.changelog == '' }}

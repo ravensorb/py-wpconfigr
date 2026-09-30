@@ -1,0 +1,7 @@
+# Base BMad's own schema: a flat mapping, no sprints, ids in two shapes.
+development_status:
+  epic-1: in-progress
+  1-1-user-authentication: done
+  1-2-session-cookies: in-progress
+  epic-2: backlog
+  2-1-report-export: backlog

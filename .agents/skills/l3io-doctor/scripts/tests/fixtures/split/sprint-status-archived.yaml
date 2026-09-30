@@ -1,0 +1,12 @@
+epics:
+  - key: 'E003'
+    title: Onboarding
+    status: done
+    sprints:
+      - key: 'S01'
+        title: Welcome tour
+        status: done
+        stories:
+          - key: 'E003-S01-001'
+            title: Tour steps
+            status: done

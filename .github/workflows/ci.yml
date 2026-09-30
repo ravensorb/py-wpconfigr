@@ -1,4 +1,4 @@
-# l3io-wp-config CI.
+# l3io-wordpress-config CI.
 #
 # Every job here also runs locally under nektos/act with no edits. Publishing
 # lives in publish.yml, which act never runs — act ignores `job.permissions` and
@@ -101,7 +101,7 @@ jobs:
     # AD-27 enforcement. A distribution tested ALONE cannot catch a namespace
     # shadow: the failure appears only once two are installed together, and this
     # package's own tests pass either way. The stub sibling means the invariant
-    # does not have to wait for l3io-wp-database to exist.
+    # does not have to wait for l3io-wordpress-database to exist.
     #
     # Builds its own wheel rather than consuming an artifact, so it runs under
     # act as well -- the most dangerous invariant should not be the one with no
@@ -220,10 +220,10 @@ jobs:
                   sys.exit(f"AD-27 — installed tree ships {marker}")
 
           installed = sorted(d.metadata["Name"] for d in distributions())
-          if installed != ["l3io-wp-config"]:
+          if installed != ["l3io-wordpress-config"]:
               sys.exit(f"AD-2 — unexpected distributions installed: {installed}")
 
-          if metadata("l3io-wp-config").get_all("Requires-Dist"):
+          if metadata("l3io-wordpress-config").get_all("Requires-Dist"):
               sys.exit("AD-2 — the wheel declares runtime dependencies")
 
           print("installed tree is clean")

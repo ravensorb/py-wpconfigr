@@ -1,11 +1,11 @@
 <!-- bmad:context -->
 <!-- Verified 2026-09-16 against 8f25bb8 plus the uncommitted rewrite. Managed by bmad-project-context; edits inside this block are replaced on refresh. Keep anything you want preserved outside the markers. -->
 
-## py-wpconfigr → l3io-wp-config
+## py-wpconfigr → l3io-wordpress-config
 
 Reads and writes `define()` constants and file-scope variable assignments in a
 WordPress `wp-config.php`. A fork of `cariad/py-wpconfigr` (MIT), rewritten as
-`l3io-wp-config`, importing as `l3io.wp.config`, released **first** of three
+`l3io-wordpress-config`, importing as `l3io.wp.config`, released **first** of three
 packages — nothing else ships until this resolves from PyPI. Zero runtime
 dependencies; hatchling and uv; `src/` layout.
 
@@ -17,7 +17,7 @@ stop.
 
 - **Never create `__init__.py` at `l3io/` or `l3io/wp/`.** Only `src/l3io/wp/config/`
   and below. An `__init__.py` above that level makes this a regular package, shadows
-  the PEP 420 namespace, and makes `l3io-wp-database` and `l3io-wp-backup`
+  the PEP 420 namespace, and makes `l3io-wordpress-database` and `l3io-wordpress-backup`
   unimportable — while this package's own tests still pass, because the failure
   appears only once two are installed together. **mypy will suggest adding one**;
   do not. `tests/test_architecture.py` fails if one appears. (AD-27)
@@ -42,11 +42,11 @@ stop.
 
 - Authoritative decisions, in `../py-wordpress-backup/`:
   `_bmad-output/implementation-artifacts/handoffs/` (start with `00-SHARED-CONTEXT.md`,
-  then `01-l3io-wp-config.md`), `docs/adr/` (13 records), and
+  then `01-l3io-wordpress-config.md`), `docs/adr/` (13 records), and
   `_bmad-output/planning-artifacts/architecture/architecture-py-wordpress-backup-2026-09-15/ARCHITECTURE-SPINE.md`.
 - `domain/` values and errors · `core/` pure parsing, rendering and verification ·
   `ports/` the Protocol · `adapters/` file I/O · `cli/` the command line.
-- The CLI ships **two** entry points: the `l3io-wp-config` console script declared in
+- The CLI ships **two** entry points: the `l3io-wordpress-config` console script declared in
   `[project.scripts]`, and `python -m l3io.wp.config`. Keep both — ADR-0007's "Console
   scripts" section makes that the family rule: a console script named for the
   distribution, with `python -m <import.path>` alongside rather than instead.
@@ -79,7 +79,7 @@ stop.
   rather than truthiness.
 - `define()` constants and `$variables` are separate namespaces: `get`/`set` reach
   constants, `get_variable`/`set_variable` reach variables. `$table_prefix` is a
-  variable, and `l3io-wp-database` needs it to locate site metadata.
+  variable, and `l3io-wordpress-database` needs it to locate site metadata.
 - Every `WpConfigFile.set()` re-reads and verifies before committing, so a write
   can raise `ReadBackError`. On failure the original file is untouched. (ADR-0010)
 - Only package-owned exceptions cross the public boundary — never `OSError`,

@@ -1,0 +1,12 @@
+epics:
+  - key: 'E001'
+    title: Authentication
+    status: in-progress
+    sprints:
+      - key: 'S01'
+        title: Login flow
+        status: in-progress
+        stories:
+          - key: 'E001-S01-001'
+            title: Password login
+            status: review

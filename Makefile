@@ -1,4 +1,4 @@
-# l3io-wp-config — local developer entry points.
+# l3io-wordpress-config — local developer entry points.
 #
 # CI is replayed locally with nektos/act, configured by .actrc plus
 # .act.{vars,env,secrets}. The same workflow files run here and on GitHub.

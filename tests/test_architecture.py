@@ -13,7 +13,16 @@ import pytest
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 SRC = REPO / "src"
-PACKAGE = SRC / "l3io" / "wp" / "config"
+NAMESPACE = "wp"
+PACKAGE = SRC / "l3io" / NAMESPACE / "config"
+
+# A rename that misses this file must FAIL, not skip. The path used to be built
+# from separate quoted segments, so a search-and-replace over "l3io/wp" never
+# reached it: PACKAGE silently pointed at a directory that did not exist, the
+# parametrised AD-1 tests got an empty parameter set and pytest SKIPPED them, and
+# the AD-27 assertion below started checking a path that cannot exist. Ten tests
+# vanished with zero failures.
+assert PACKAGE.is_dir(), f"PACKAGE does not exist: {PACKAGE} — did the namespace change?"
 
 INWARD_ONLY = ("core", "domain")
 OUTWARD_LAYERS = ("ports", "adapters", "cli")
@@ -21,7 +30,9 @@ OUTWARD_LAYERS = ("ports", "adapters", "cli")
 
 def _modules(*relative: str) -> Iterator[pathlib.Path]:
     for part in relative:
-        yield from sorted((PACKAGE / part).rglob("*.py"))
+        found = sorted((PACKAGE / part).rglob("*.py"))
+        assert found, f"no modules under {PACKAGE / part} — an empty scope skips, not fails"
+        yield from found
 
 
 def test_no_init_marker_at_either_namespace_level():
@@ -31,7 +42,7 @@ def test_no_init_marker_at_either_namespace_level():
     unimportable -- while this package's own tests still pass.
     """
     assert not (SRC / "l3io" / "__init__.py").exists()
-    assert not (SRC / "l3io" / "wp" / "__init__.py").exists()
+    assert not (SRC / "l3io" / NAMESPACE / "__init__.py").exists()
 
 
 def test_the_only_init_files_live_at_or_below_the_area_package():

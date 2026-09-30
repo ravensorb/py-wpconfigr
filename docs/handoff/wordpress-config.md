@@ -10,7 +10,7 @@ instead — this file is transient state, which `AGENTS.md`'s own rules exclude.
 
 ## What this session owns
 
-`py-wpconfigr`, published as **`l3io-wp-config`**, importing as `l3io.wp.config`. Release
+`py-wpconfigr`, published as **`l3io-wordpress-config`**, importing as `l3io.wp.config`. Release
 position **1 of 3** in the `l3io.wp` family and the gate on the other two.
 
 Work arrived as a handoff, not as l3io-pm epics — so this repo has no stories, and
@@ -27,7 +27,7 @@ Work arrived as a handoff, not as l3io-pm epics — so this repo has no stories,
 - [done] GitHub Actions CI with full nektos/act parity — every job replays locally, nothing
   gated off.
 - [done] **`v0.0.1` released** — tag, GitHub Release with wheel and sdist, and
-  `l3io-wp-config 0.0.1` in the Gitea registry. PyPI untouched and still opt-in.
+  `l3io-wordpress-config 0.0.1` in the Gitea registry. PyPI untouched and still opt-in.
   An earlier tag was cut and then fully withdrawn — tag, registry entry and release
   all deleted — when the family restarted its versioning, and the version floor that
   assumed it is gone. The release line starts at `0.0.1`.
@@ -61,7 +61,7 @@ the cheaper action.
 
 1. `AGENTS.md` here — invariants, CI conventions, registry facts, known pitfalls.
 2. `../py-wordpress-backup/_bmad-output/implementation-artifacts/handoffs/` —
-   `00-SHARED-CONTEXT.md` then `01-l3io-wp-config.md`. The de facto spec for this package.
+   `00-SHARED-CONTEXT.md` then `01-l3io-wordpress-config.md`. The de facto spec for this package.
 3. `../py-wordpress-backup/docs/adr/` — ADR-0007 (packaging, console scripts), ADR-0010
    (parser scope and read-back), ADR-0012 (naming); and `ARCHITECTURE-SPINE.md` for AD-1,
    AD-2, AD-14, AD-15, AD-27.
@@ -123,7 +123,7 @@ A handoff is read as settled fact, so the distinction is drawn explicitly.
 
 ## Cross-repo state
 
-- `l3io-wp-database` consumes this package, and its pin is **stale**: it names a
+- `l3io-wordpress-database` consumes this package, and its pin is **stale**: it names a
   tag that no longer exists, and its two version constraints cannot be met by
   `0.0.1`. It needs repointing to `tag = "v0.0.1"` with the constraints relaxed —
   that session has been told, and the work is theirs.

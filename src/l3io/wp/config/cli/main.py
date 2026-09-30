@@ -27,7 +27,7 @@ EXIT_FAILED = 2
 def build_parser() -> argparse.ArgumentParser:
     """The argument parser, exposed so tests can derive their scope from it."""
     parser = argparse.ArgumentParser(
-        prog="l3io-wp-config",
+        prog="l3io-wordpress-config",
         description=(
             "Read and write properties in a wp-config.php file. Include --value, "
             "--set-true or --set-false to write; omit them to read."
