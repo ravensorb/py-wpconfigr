@@ -46,17 +46,25 @@ jobs:
       # A dev build needs no version decision at all: the commit's distance from
       # the last tag already determines it. Hand straight over to publish.yml,
       # which is the only thing that publishes.
+      # Dispatched through the org action rather than a hand-rolled `gh workflow
+      # run`: it is the maintained implementation of this, and it speaks Gitea as
+      # well as GitHub, so dispatching from the self-hosted instance later needs
+      # no second version of this step.
+      #
+      # `workflow-name` is publish.yml's top-level `name:` field -- "Publish" --
+      # not the filename and not a job name.
       - name: dev build -- publish this commit to the mirror
         if: inputs.bump == 'dev'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh workflow run publish.yml \
-            --repo "${GITHUB_REPOSITORY}" \
-            --ref "${GITHUB_REF_NAME}" \
-            -f target=mirror
-          echo "::notice::dispatched a dev publish for ${GITHUB_SHA}; the version is derived from the commit distance"
+        uses: LiquidLogicLabs/git-action-trigger-workflow@v2
+        with:
+          workflow-name: Publish
+          ref: ${{ github.ref_name }}
+          inputs: '{"target": "mirror"}'
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: say what was dispatched
+        if: inputs.bump == 'dev'
+        run: echo "::notice::dispatched a dev publish for ${GITHUB_SHA}; the version is derived from the commit distance"
 
       - name: what is the latest release tag?
         if: inputs.bump != 'dev'
@@ -159,22 +167,24 @@ jobs:
         # REQUIRED, not a convenience. GitHub does not trigger workflows from a ref
         # created with GITHUB_TOKEN, so the tag above fires no push event and
         # publish.yml would never run -- the tag would sit there unpublished while
-        # this workflow reported success. Verified: v0.0.1 in py-wordpress-database
-        # was created by the action and produced ZERO Publish runs.
+        # this workflow reported success. Verified twice: v0.0.1 in
+        # py-wordpress-database was created by the action and produced ZERO Publish
+        # runs, and this repo's own v0.0.2 has exactly one Publish run, on
+        # `workflow_dispatch` -- never `push`.
         #
         # Dispatched AT the new tag, so github.ref is that tag inside publish.yml
         # and its tag-gated jobs -- version gate, mirror, release -- all apply.
         if: inputs.bump != 'dev'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEXT: v${{ steps.next.outputs.version }}
-        run: |
-          set -euo pipefail
-          gh workflow run publish.yml \
-            --repo "${GITHUB_REPOSITORY}" \
-            --ref "${NEXT}" \
-            -f target=mirror
-          echo "::notice::dispatched publish.yml at ${NEXT}"
+        uses: LiquidLogicLabs/git-action-trigger-workflow@v2
+        with:
+          workflow-name: Publish
+          ref: v${{ steps.next.outputs.version }}
+          inputs: '{"target": "mirror"}'
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: say what was dispatched
+        if: inputs.bump != 'dev'
+        run: echo "::notice::dispatched publish.yml at v${{ steps.next.outputs.version }}"
 
       - name: summary
         if: inputs.bump != 'dev'
