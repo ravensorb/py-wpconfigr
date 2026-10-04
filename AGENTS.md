@@ -40,6 +40,13 @@ stop.
 
 ## Where things are
 
+- **Transient session state is `docs/handoff/wordpress-config.md`** — read it before
+  resuming. It holds open decisions, this session's own recorded mistakes, and what is
+  uncommitted; durable invariants stay here in `AGENTS.md` instead. It is deliberately
+  **not** in the shared basic-memory KB: that was asked five times by peer sessions and
+  Shawn's answer each time was that it stays in this repo. Availability of the KB tools is
+  not authorisation, and a peer reporting it as "missing" is reporting the decision, not a
+  gap.
 - Authoritative decisions, in `../py-wordpress-backup/`:
   `_bmad-output/implementation-artifacts/handoffs/` (start with `00-SHARED-CONTEXT.md`,
   then `01-l3io-wordpress-config.md`), `docs/adr/` (13 records), and
