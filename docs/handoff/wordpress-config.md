@@ -76,10 +76,10 @@ say so and stop.
 A handoff is read as settled fact, so the distinction is drawn explicitly.
 
 **Tested by execution:**
-- `PYPI_CUSTOM_USERNAME`/`PYPI_CUSTOM_PASSWORD` from Infisical return **401** against
-  `git.ravenwolf.org`. Basic auth with the username plus `GITEA_TOKEN` as the password
-  returns 200. Credentials live in Infisical (project id is in `~/.actrc`'s comments); their
-  values appear nowhere in this repo.
+- The registry username/password pair from the secret store returns **401** against the
+  private Gitea package registry. Basic auth with the same username plus an API *token* as
+  the password returns 200 — the pair is not interchangeable. Credential names, locations and
+  values are deliberately not recorded here: this repository is public.
 - Gitea's package index serves no root listing: `.../pypi/simple/` is 404 while
   `.../pypi/simple/<name>/` is 401. `/api/v1/version` returning 200 separates "needs auth"
   from "wrong host".
@@ -94,7 +94,7 @@ A handoff is read as settled fact, so the distinction is drawn explicitly.
   Gitea's behaviour for a public org's package registry was not tested.
 - That a PyPI publish additionally needs trusted publishing configured on PyPI's side and a
   `pypi` GitHub environment. Inferred from their absence; never attempted.
-- Where the stale `PYPI_CUSTOM_*` credentials *do* work. Unknown and uninvestigated — an
+- Where that stale username/password pair *does* work. Unknown and uninvestigated — an
   earlier version of `AGENTS.md` asserted they belonged to another registry, which was an
   inference sitting beside a test. Corrected; do not reintroduce it.
 
